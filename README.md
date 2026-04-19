@@ -142,9 +142,37 @@ memory/               Daily logs — auto-generated, gitignored
 
 ## Customization
 
-The agent's personality lives in `config/SOUL.md`. Edit it and restart — the stable cache invalidates automatically on the next call. Swap the entire persona by replacing SOUL.md; the harness is persona-agnostic.
+### She ships ready
 
-`config/MEMORY.md` is the agent's long-term memory. The agent can update it during a session using the `write_file` tool. It's part of the stable cache block, so changes take effect on the next call after a cache miss.
+`config/SOUL.md` contains Galadriel's complete identity — the Cyber-Elf persona, her values, her voice, her continuity instructions. This is not a placeholder. Clone the repo, set your API key, and she's alive. You don't need to touch SOUL.md to get started.
+
+When you're ready to make her your own: edit the name, rewrite the vibe, change the metaphors. The harness is fully persona-agnostic — SOUL.md is just a Markdown file. Some people have replaced her entirely with a stoic Roman general, a dry British detective, a no-nonsense SRE. It works because the character lives in the file, not in the code.
+
+### MEMORY.md — tell her who you are and where she lives
+
+`config/MEMORY.md` is her operational memory: your name, your infrastructure, your constraints. The agent can update it herself during a session using the `write_file` tool. Here's what a real deployment looks like:
+
+```markdown
+## About Your User
+- User Name: Lord Isildur          ← what she calls you, every message
+- Authorized Discord ID: 123456789012345678
+
+## Infrastructure
+- Server: EC2 t4g.medium, eu-north-1
+- Working Dir: /opt/galadriel
+- Python Venv: /home/ubuntu/.venv
+- Model: claude-opus-4-6
+
+## Operational Notes
+- AWS_PROFILE must be blank when using instance role
+- Git remote: https://github.com/you/galadriel-public.git
+```
+
+Fill in your real values and she'll orient herself correctly from the first message of every session.
+
+### CONTEXT.md — your project, always in context
+
+`config/CONTEXT.md` is where you describe what you're building. It loads into the stable cache block alongside SOUL.md and MEMORY.md, so Galadriel always has your project's architecture, goals, and known quirks available without needing tool calls to find them. It's also what pushes the stable block over the Opus cache minimum — see the warning above.
 
 ---
 
