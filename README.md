@@ -26,6 +26,36 @@ Anthropic's own benchmarks show latency dropping by up to 85% on long prompts wi
 
 Use `/status` in Discord at any time to watch live token numbers — input, cache_read, cache_write, output — for the last API call.
 
+### ⚠️ One thing you must do to activate the savings
+
+Prompt caching has a **minimum prefix length** before it engages. If your stable block is too short, the API silently skips caching entirely — you get no error, no warning, just a `cache_read=0` in every log line and a bill that looks exactly like the naive approach.
+
+| Model | Minimum to activate caching |
+|---|---|
+| Claude Opus (any version) | **4,096 tokens** (~16 KB of text) |
+| Claude Haiku 4.5 | **4,096 tokens** |
+| Claude Sonnet 4.6 | **2,048 tokens** |
+| Claude Sonnet 4.5 / 4 | **1,024 tokens** |
+
+Out of the box, `config/SOUL.md` + `config/MEMORY.md` together are roughly 500–800 tokens. **That is well below the Opus threshold.** Caching will not engage until you cross it.
+
+**The fix:** fill in `config/CONTEXT.md`. Drop your project's architecture, goals, key file paths, known quirks, and current status into it. Any `*.md` file you place in `config/` is automatically loaded into the stable cache block — so adding content there is all it takes. A reasonably filled CONTEXT.md (1–2 pages of project notes) will push the total above 4K tokens and keep it there.
+
+Once you're over the threshold, verify it's working:
+
+```bash
+journalctl -u galadriel -f   # or check your terminal output
+```
+
+Look for lines like:
+```
+Tokens | input=60 cache_read=5800 cache_write=0 output=240
+```
+
+`cache_read` climbing and `cache_write` near zero after the first call = caching is engaged and you're paying 10 cents on the dollar for that context. If `cache_read` stays at 0, add more content to `config/CONTEXT.md`. See `CACHING.md` for the full breakdown and a worked cost example.
+
+> **Sonnet users:** your minimum is only 2,048 tokens, so SOUL.md + MEMORY.md alone may be enough. But filling CONTEXT.md is still worthwhile — the agent has your project context without needing tool calls to find it.
+
 ---
 
 ## Baked-in engineering discipline: the Karpathy principles
@@ -63,8 +93,8 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 
 ```bash
 # 1. Clone
-git clone https://github.com/avasol/galadriel.git
-cd galadriel
+git clone https://github.com/avasol/galadriel-public.git
+cd galadriel-public
 
 # 2. Install
 pip install -r requirements.txt
@@ -104,8 +134,7 @@ tower/
 config/
   SOUL.md             Agent personality and values (your main customization point)
   MEMORY.md           Long-term memory (agent-maintained)
-  IDENTITY.md         Name, persona, vibe
-  USER.md             Human profile
+  CONTEXT.md          Your project context — fill this in to activate Opus caching
 memory/               Daily logs — auto-generated, gitignored
 ```
 
