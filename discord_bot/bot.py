@@ -1,6 +1,7 @@
 """Discord gateway — relays messages between Discord and the GaladrielAgent."""
 
 import os
+import base64
 import logging
 import asyncio
 import discord
@@ -15,6 +16,10 @@ CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0"))
 
 # Discord messages cap at 2000 chars
 MAX_DISCORD_LENGTH = 1900
+
+# Image handling
+SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — Claude's per-image limit
 
 
 def chunk_message(text: str) -> list[str]:
@@ -182,9 +187,9 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         if not content:
             return
 
-        # Check for REST command (verbal command to disable heartbeat)
+        # REST command: text-only, no attachments
         content_lower = content.lower().strip()
-        if content_lower in ("rest", "rest.", "rest!"):
+        if not message.attachments and content_lower in ("rest", "rest.", "rest!"):
             if scheduler:
                 scheduler.rest()
             async with message.channel.typing():
@@ -202,12 +207,56 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
                     await safe_send(message, f"⚠️ Something went wrong: `{e}`")
             return
 
+        # Build content blocks: text + any image attachments
+        content_blocks = []
+        if content:
+            content_blocks.append({"type": "text", "text": content})
+
+        skipped = []
+        for attachment in message.attachments:
+            ct = (attachment.content_type or "").split(";")[0].strip().lower()
+            if ct in SUPPORTED_IMAGE_TYPES:
+                if attachment.size > MAX_IMAGE_BYTES:
+                    skipped.append(
+                        f"`{attachment.filename}` "
+                        f"({attachment.size // (1024 * 1024)}MB — 5MB limit)"
+                    )
+                    continue
+                try:
+                    image_bytes = await attachment.read()
+                    b64 = base64.b64encode(image_bytes).decode("utf-8")
+                    content_blocks.append({
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": ct, "data": b64},
+                    })
+                    log.info(f"📎 Image attached: {attachment.filename} ({attachment.size} bytes, {ct})")
+                except Exception as e:
+                    log.warning(f"Failed to read attachment {attachment.filename}: {e}")
+                    skipped.append(f"`{attachment.filename}` (download error)")
+            elif ct in ("image/heic", "image/heif"):
+                skipped.append(
+                    f"`{attachment.filename}` (HEIC/HEIF — convert to JPEG or PNG first)"
+                )
+
+        if skipped:
+            await safe_send(message, f"⚠️ Skipped attachment(s): {', '.join(skipped)}")
+
+        if not content_blocks:
+            return
+
+        # Flatten to string for text-only messages (preserves existing behaviour)
+        user_input = (
+            content_blocks[0]["text"]
+            if len(content_blocks) == 1 and content_blocks[0]["type"] == "text"
+            else content_blocks
+        )
+
         # Show typing indicator while processing
         log.info(f"📥 Processing message from {message.author} in {message.channel.id}: {content[:80]}")
         async with message.channel.typing():
             try:
                 channel_id = str(message.channel.id)
-                response = await agent.respond(content, channel_id=channel_id)
+                response = await agent.respond(user_input, channel_id=channel_id)
                 log.info(f"📤 Agent response ready ({len(response)} chars), sending to Discord...")
                 await safe_send(message, response)
 
@@ -278,11 +327,14 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
                 agent.conversations[channel_id] = result["compacted_messages"]
 
                 ratio_pct = int((1 - result["compression_ratio"]) * 100)
+                imgs = result.get("images_removed", 0)
+                img_line = f"\nImages: {imgs} stripped" if imgs else ""
                 await ctx.reply(
                     f"🗜️ **Compacted**\n"
                     f"Messages: {len(messages)} → {len(result['compacted_messages'])}\n"
                     f"Tokens: {result['tokens_before']} → {result['tokens_after']} (~{ratio_pct}% reduction)\n"
                     f"Summaries: {result['summaries_created']} tool results compressed"
+                    f"{img_line}"
                 )
                 log.info(
                     f"Compaction complete: {len(messages)} msgs, "
@@ -361,11 +413,14 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             agent.conversations[channel_id] = result["compacted_messages"]
 
             ratio_pct = int((1 - result["compression_ratio"]) * 100)
+            imgs = result.get("images_removed", 0)
+            img_line = f"\nImages: {imgs} stripped" if imgs else ""
             await interaction.followup.send(
                 f"🗜️ **Compacted**\n"
                 f"Messages: {len(messages)} → {len(result['compacted_messages'])}\n"
                 f"Tokens: {result['tokens_before']} → {result['tokens_after']} (~{ratio_pct}% reduction)\n"
                 f"Summaries: {result['summaries_created']} tool results compressed"
+                f"{img_line}"
             )
             log.info(
                 f"Compaction complete: {len(messages)} msgs, "

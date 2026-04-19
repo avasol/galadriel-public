@@ -38,6 +38,7 @@ async def compact_conversation(messages: list, api_key: str = None) -> dict:
     fresh_messages = messages[-fresh_count:]
 
     summaries_created = 0
+    images_removed = 0
     compacted_old = []
 
     for msg in old_messages:
@@ -47,6 +48,15 @@ async def compact_conversation(messages: list, api_key: str = None) -> dict:
             new_content = []
 
             for block in content:
+                # Strip image blocks — they're huge and useless in old turns
+                if isinstance(block, dict) and block.get("type") == "image":
+                    new_content.append({
+                        "type": "text",
+                        "text": "[image removed — context compacted]",
+                    })
+                    images_removed += 1
+                    continue
+
                 if (
                     isinstance(block, dict)
                     and block.get("type") == "tool_result"
@@ -110,4 +120,5 @@ async def compact_conversation(messages: list, api_key: str = None) -> dict:
         "tokens_after": tokens_after,
         "compression_ratio": ratio,
         "summaries_created": summaries_created,
+        "images_removed": images_removed,
     }

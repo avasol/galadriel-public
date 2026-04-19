@@ -280,7 +280,7 @@ class GaladrielAgent:
         messages.append(last)
         log.warning(f"Fallback trim: no plain user messages found, kept only last message")
 
-    def _hard_reset(self, messages: list, user_message: str):
+    def _hard_reset(self, messages: list, user_message: str | list):
         """Nuclear option: clear conversation and start fresh with the user message.
 
         Used when max_tokens keeps hitting and normal trimming can't help.
@@ -310,7 +310,7 @@ class GaladrielAgent:
         except Exception:
             log.debug("Could not log usage fields", exc_info=True)
 
-    async def respond(self, user_message: str, channel_id: str = "default") -> str:
+    async def respond(self, user_message: str | list, channel_id: str = "default") -> str:
         messages = self._get_messages(channel_id)
         messages.append({"role": "user", "content": user_message})
         self._trim_history(messages)
@@ -360,8 +360,9 @@ class GaladrielAgent:
                     if isinstance(block, dict) and block.get("type") == "text"
                 ]
                 final_text = "\n".join(text_parts) if text_parts else "(no response)"
+                user_summary = user_message[:100] if isinstance(user_message, str) else "[multimodal message]"
                 self.memory.append_daily_log(
-                    f"[chat:{channel_id}] User: {user_message[:100]}..."
+                    f"[chat:{channel_id}] User: {user_summary}..."
                 )
                 return final_text
 
