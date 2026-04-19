@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+memory/*.md
+memory/*.json
+!memory/.gitkeep
+*.log
+.venv/
+venv/
+# Debug prompt dumps contain full system prompt content
+debug/prompts/

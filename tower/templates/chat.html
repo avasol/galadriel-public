@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mirror of Galadriel — Chat</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container chat-container">
+        <header>
+            <h1>The Mirror of Galadriel</h1>
+            <p class="subtitle">Direct channel to the agent</p>
+            <div class="header-actions">
+                <a href="/" class="btn btn-small">Tower</a>
+                <button onclick="clearChat()" class="btn btn-small btn-danger">Clear History</button>
+            </div>
+        </header>
+
+        <div id="chat-log" class="chat-log"></div>
+
+        <form id="chat-form" class="chat-form" onsubmit="sendMessage(event)">
+            <textarea
+                id="chat-input"
+                class="chat-input"
+                placeholder="Speak, my lord..."
+                rows="2"
+                onkeydown="handleKey(event)"
+            ></textarea>
+            <button type="submit" class="btn" id="send-btn">Send</button>
+        </form>
+    </div>
+
+    <script>
+    const chatLog = document.getElementById('chat-log');
+    const chatInput = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('send-btn');
+
+    // Load existing history on page load
+    (async () => {
+        const res = await fetch('/api/history?channel=tower');
+        const data = await res.json();
+        for (const msg of data.history || []) {
+            appendMessage(msg.role, msg.text);
+        }
+        scrollToBottom();
+    })();
+
+    function appendMessage(role, text) {
+        const div = document.createElement('div');
+        div.className = `msg msg-${role}`;
+        const label = role === 'user' ? 'You' : 'Galadriel';
+        div.innerHTML = `<strong>${label}</strong><div class="msg-text">${escapeHtml(text)}</div>`;
+        chatLog.appendChild(div);
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function scrollToBottom() {
+        chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    function handleKey(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage(e);
+        }
+    }
+
+    async function sendMessage(e) {
+        e.preventDefault();
+        const message = chatInput.value.trim();
+        if (!message) return;
+
+        appendMessage('user', message);
+        chatInput.value = '';
+        sendBtn.disabled = true;
+        sendBtn.textContent = 'Thinking...';
+        scrollToBottom();
+
+        try {
+            const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({message}),
+            });
+            const data = await res.json();
+            if (data.error) {
+                appendMessage('assistant', `[Error] ${data.error}`);
+            } else {
+                appendMessage('assistant', data.response);
+            }
+        } catch (err) {
+            appendMessage('assistant', `[Error] ${err.message}`);
+        } finally {
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Send';
+            scrollToBottom();
+        }
+    }
+
+    async function clearChat() {
+        if (!confirm('Clear conversation history?')) return;
+        await fetch('/api/clear', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({channel: 'tower'}),
+        });
+        chatLog.innerHTML = '';
+    }
+    </script>
+</body>
+</html>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galadriel Harness — Tower</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Lothlórien — The White Tower</h1>
+            <p class="subtitle">Galadriel Agent Harness</p>
+        </header>
+
+        <div class="status-grid">
+            <div class="card">
+                <div class="card-label">Model</div>
+                <div class="card-value">{{ model }}</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Active Channels</div>
+                <div class="card-value">{{ channels }}</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Messages in Memory</div>
+                <div class="card-value">{{ total_msgs }}</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Server Time</div>
+                <div class="card-value">{{ now }}</div>
+            </div>
+        </div>
+
+        <!-- Scheduler Control Panel -->
+        {% if scheduler %}
+        <section class="scheduler-section">
+            <h2>⏰ Scheduler</h2>
+            <div class="scheduler-grid">
+                <!-- Heartbeat Control -->
+                <div class="card scheduler-card">
+                    <div class="card-label">Heartbeat</div>
+                    <div class="heartbeat-controls">
+                        <div class="toggle-row">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="heartbeat-toggle"
+                                    {% if scheduler.heartbeat_enabled %}checked{% endif %}
+                                    onchange="toggleHeartbeat()">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span id="heartbeat-status" class="heartbeat-status {{ 'status-on' if scheduler.heartbeat_enabled else 'status-off' }}">
+                                {{ '🟢 ACTIVE' if scheduler.heartbeat_enabled else '🔴 OFF' }}
+                            </span>
+                        </div>
+                        <div class="interval-row">
+                            <label for="heartbeat-interval" class="interval-label">Interval:</label>
+                            <select id="heartbeat-interval" class="interval-select" onchange="changeInterval()">
+                                {% for iv in scheduler.valid_intervals %}
+                                <option value="{{ iv }}" {% if iv == scheduler.heartbeat_interval %}selected{% endif %}>
+                                    {{ iv }}m
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Morning Routine -->
+                <div class="card scheduler-card">
+                    <div class="card-label">Morning Greeting</div>
+                    <div class="card-value cron-info">
+                        <span class="cron-emoji">🌅</span>
+                        {{ scheduler.morning_time }}
+                    </div>
+                    <div class="cron-note">Always on • Calendar & coffers check</div>
+                </div>
+
+                <!-- Goodnight Routine -->
+                <div class="card scheduler-card">
+                    <div class="card-label">Goodnight</div>
+                    <div class="card-value cron-info">
+                        <span class="cron-emoji">🌙</span>
+                        {{ scheduler.goodnight_time }}
+                    </div>
+                    <div class="cron-note">Always on • Disables heartbeat (REST)</div>
+                </div>
+            </div>
+            <div class="scheduler-meta">
+                CET Time: <strong>{{ scheduler.server_time_cet }}</strong>
+                &nbsp;·&nbsp;
+                {{ 'Workday ✅' if scheduler.is_workday else 'Weekend 🏖️' }}
+            </div>
+        </section>
+        {% endif %}
+
+        <section class="memory-section">
+            <h2>Recent Memory Logs</h2>
+            <ul class="memory-list">
+                {% for date in recent_memories %}
+                <li><a href="#" onclick="loadMemory('{{ date }}')">{{ date }}</a></li>
+                {% else %}
+                <li class="muted">No memory logs yet.</li>
+                {% endfor %}
+            </ul>
+            <pre id="memory-content" class="memory-display"></pre>
+        </section>
+
+        <nav class="nav-links">
+            <a href="/chat" class="btn">Enter the Mirror (Chat)</a>
+        </nav>
+    </div>
+
+    <script>
+    async function loadMemory(date) {
+        const res = await fetch(`/api/memory?date=${date}`);
+        const data = await res.json();
+        document.getElementById('memory-content').textContent = data.content || data.error || 'Empty';
+    }
+
+    async function toggleHeartbeat() {
+        const toggle = document.getElementById('heartbeat-toggle');
+        const interval = parseInt(document.getElementById('heartbeat-interval').value);
+        const enabled = toggle.checked;
+
+        try {
+            const res = await fetch('/api/scheduler/heartbeat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ enabled, interval }),
+            });
+            const data = await res.json();
+            updateHeartbeatUI(data);
+        } catch (err) {
+            console.error('Failed to toggle heartbeat:', err);
+            // Revert toggle
+            toggle.checked = !toggle.checked;
+        }
+    }
+
+    async function changeInterval() {
+        const toggle = document.getElementById('heartbeat-toggle');
+        if (!toggle.checked) return; // Only apply if heartbeat is on
+
+        const interval = parseInt(document.getElementById('heartbeat-interval').value);
+
+        try {
+            const res = await fetch('/api/scheduler/heartbeat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ enabled: true, interval }),
+            });
+            const data = await res.json();
+            updateHeartbeatUI(data);
+        } catch (err) {
+            console.error('Failed to change interval:', err);
+        }
+    }
+
+    function updateHeartbeatUI(data) {
+        const status = document.getElementById('heartbeat-status');
+        if (data.heartbeat_enabled) {
+            status.textContent = '🟢 ACTIVE';
+            status.className = 'heartbeat-status status-on';
+        } else {
+            status.textContent = '🔴 OFF';
+            status.className = 'heartbeat-status status-off';
+        }
+    }
+
+    // Auto-refresh scheduler status every 30s
+    setInterval(async () => {
+        try {
+            const res = await fetch('/api/scheduler');
+            const data = await res.json();
+            const toggle = document.getElementById('heartbeat-toggle');
+            const status = document.getElementById('heartbeat-status');
+            if (toggle && status) {
+                toggle.checked = data.heartbeat_enabled;
+                updateHeartbeatUI(data);
+            }
+        } catch (e) {}
+    }, 30000);
+    </script>
+</body>
+</html>

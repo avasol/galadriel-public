@@ -1,0 +1,41 @@
+[Unit]
+Description=Galadriel Agent Harness (Claude + Discord + Tower)
+Documentation=https://github.com/avasol/galadriel-public
+After=network-online.target
+Wants=network-online.target
+
+# Restart rate-limiting (max 5 restarts per 5 minutes)
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+
+# ── Update these three paths to match your installation ──────
+WorkingDirectory=/opt/galadriel
+ExecStart=/opt/galadriel/.venv/bin/python3 /opt/galadriel/main.py
+EnvironmentFile=/opt/galadriel/.env
+# ─────────────────────────────────────────────────────────────
+
+# Ensure AWS CLI uses instance role when on EC2 (no profile)
+Environment=HOME=/home/ubuntu
+Environment=PATH=/opt/galadriel/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Restart policy: always come back
+Restart=on-failure
+RestartSec=10
+
+# Logging to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=galadriel
+
+# Graceful shutdown
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

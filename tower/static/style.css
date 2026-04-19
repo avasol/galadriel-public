@@ -1,0 +1,277 @@
+/* Galadriel Harness — Tower UI */
+
+:root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --border: #1e1e2e;
+    --text: #e0e0e0;
+    --muted: #666;
+    --gold: #d4af37;
+    --gold-dim: #a68b1a;
+    --danger: #c0392b;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+}
+
+/* Header */
+header { margin-bottom: 2rem; }
+h1 {
+    font-size: 1.8rem;
+    color: var(--gold);
+    font-weight: 600;
+}
+h2 {
+    font-size: 1.2rem;
+    color: var(--gold-dim);
+    margin-bottom: 0.75rem;
+}
+.subtitle { color: var(--muted); margin-top: 0.25rem; }
+.header-actions { margin-top: 0.75rem; display: flex; gap: 0.5rem; }
+
+/* Status Grid */
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+}
+.card-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin-bottom: 0.5rem;
+}
+.card-value {
+    font-size: 1.1rem;
+    font-weight: 500;
+    word-break: break-all;
+}
+
+/* Memory */
+.memory-section { margin-bottom: 2rem; }
+.memory-list {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+.memory-list a {
+    color: var(--gold);
+    text-decoration: none;
+    padding: 0.25rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+.memory-list a:hover { border-color: var(--gold); }
+.memory-display {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    min-height: 100px;
+    max-height: 400px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    color: var(--muted);
+}
+.muted { color: var(--muted); }
+
+/* Buttons */
+.btn {
+    display: inline-block;
+    padding: 0.6rem 1.5rem;
+    background: var(--gold);
+    color: var(--bg);
+    border: none;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    text-decoration: none;
+    transition: opacity 0.2s;
+}
+.btn:hover { opacity: 0.85; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-small { padding: 0.35rem 0.75rem; font-size: 0.8rem; }
+.btn-danger { background: var(--danger); color: #fff; }
+.nav-links { text-align: center; margin-top: 2rem; }
+
+/* Chat */
+.chat-container { max-width: 760px; }
+.chat-log {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    height: 60vh;
+    overflow-y: auto;
+    margin-bottom: 1rem;
+}
+.msg { margin-bottom: 1rem; }
+.msg strong { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.msg-user strong { color: var(--muted); }
+.msg-assistant strong { color: var(--gold); }
+.msg-text {
+    margin-top: 0.3rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.chat-form {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-end;
+}
+.chat-input {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.95rem;
+    resize: vertical;
+}
+.chat-input:focus { outline: none; border-color: var(--gold); }
+
+/* ── Scheduler Section ───────────────────────────────────────── */
+.scheduler-section {
+    margin-bottom: 2rem;
+}
+.scheduler-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+}
+.scheduler-card {
+    position: relative;
+}
+
+/* Toggle switch */
+.toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 48px;
+    height: 26px;
+    flex-shrink: 0;
+}
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-color: #333;
+    transition: 0.3s;
+    border-radius: 26px;
+}
+.toggle-slider::before {
+    content: "";
+    position: absolute;
+    height: 20px;
+    width: 20px;
+    left: 3px;
+    bottom: 3px;
+    background-color: #888;
+    transition: 0.3s;
+    border-radius: 50%;
+}
+input:checked + .toggle-slider {
+    background-color: var(--gold-dim);
+}
+input:checked + .toggle-slider::before {
+    transform: translateX(22px);
+    background-color: var(--gold);
+}
+
+.heartbeat-status {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+.status-on { color: #27ae60; }
+.status-off { color: #e74c3c; }
+
+/* Interval selector */
+.interval-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.interval-label {
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.interval-select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+.interval-select:focus {
+    outline: none;
+    border-color: var(--gold);
+}
+
+/* Cron info styling */
+.cron-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.95rem !important;
+}
+.cron-emoji {
+    font-size: 1.3rem;
+}
+.cron-note {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-top: 0.5rem;
+    font-style: italic;
+}
+.scheduler-meta {
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-align: right;
+}

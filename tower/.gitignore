@@ -1,0 +1,12 @@
+# Ignore build artifacts and Python cache
+__pycache__/
+*.pyc
+venv/
+.env
+.DS_Store
+*.swp
+build/
+dist/
+.aws-sam/
+sam-installation/
+aws-sam-cli-linux-arm64.zip
