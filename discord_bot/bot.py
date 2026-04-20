@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 from harness.agent import GaladrielAgent
 from harness.compaction import compact_conversation
+from harness.error_humanizer import humanize_anthropic_error
 
 log = logging.getLogger("galadriel.discord")
 
@@ -219,7 +220,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
                     await safe_send(message, response)
                 except Exception as e:
                     log.exception("Error processing REST command")
-                    await safe_send(message, f"⚠️ Something went wrong: `{e}`")
+                    await safe_send(message, humanize_anthropic_error(e) or f"⚠️ Something went wrong: `{e}`")
             return
 
         # Build content blocks: text + any image attachments
@@ -283,7 +284,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
 
             except Exception as e:
                 log.exception("Error processing message")
-                await safe_send(message, f"⚠️ Something went wrong: `{e}`")
+                await safe_send(message, humanize_anthropic_error(e) or f"⚠️ Something went wrong: `{e}`")
 
     @bot.command(name="clear")
     async def clear_cmd(ctx: commands.Context):
@@ -363,7 +364,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
                 )
             except Exception as e:
                 log.exception("Error during compaction")
-                await ctx.reply(f"⚠️ Compaction failed: `{e}`")
+                await ctx.reply(humanize_anthropic_error(e) or f"⚠️ Compaction failed: `{e}`")
 
     # ── Slash Commands ───────────────────────────────────────────
 
@@ -448,6 +449,6 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             )
         except Exception as e:
             log.exception("Error during compaction")
-            await interaction.followup.send(f"⚠️ Compaction failed: `{e}`")
+            await interaction.followup.send(humanize_anthropic_error(e) or f"⚠️ Compaction failed: `{e}`")
 
     return bot
