@@ -63,8 +63,10 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
     intents.message_content = True
     bot = commands.Bot(command_prefix="!", intents=intents)
 
-    # Track pending approvals: message_id -> asyncio.Future
-    pending_approvals: dict[int, asyncio.Future] = {}
+    # In-flight approval bubbles keyed by command text. Duplicate requests
+    # for the same command (e.g. from max_tokens retries) attach to the
+    # existing bubble rather than spawning another.
+    pending_approvals: dict[str, "ApprovalView"] = {}
 
     async def get_dm_channel() -> discord.abc.Messageable | None:
         """Open a direct-message channel with the authorized user.
@@ -88,36 +90,97 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             log.warning(f"Could not open DM with user {AUTHORIZED_USER_ID}: {e}")
             return None
 
+    class ApprovalView(discord.ui.View):
+        """Button-based approval prompt. Replaces reaction-based approval to
+        avoid the "1/1" counter artifact from the bot's own seed reactions,
+        and to give a proper disabled state once resolved."""
+
+        def __init__(self, command: str, future: asyncio.Future):
+            super().__init__(timeout=30.0)
+            self.command = command
+            self.future = future
+            self.message: discord.Message | None = None
+            self.dedup_count = 0
+
+        async def _resolve(self, interaction: discord.Interaction, approved: bool):
+            if not self.future.done():
+                self.future.set_result(approved)
+            for child in self.children:
+                child.disabled = True
+            prefix = "✅ Approved" if approved else "❌ Denied"
+            suffix = f" (merged {self.dedup_count + 1} requests)" if self.dedup_count else ""
+            await interaction.response.edit_message(
+                content=f"{prefix}{suffix}: `{self.command}`",
+                view=self,
+            )
+            self.stop()
+
+        @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="✅")
+        async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if interaction.user.id != AUTHORIZED_USER_ID:
+                await interaction.response.send_message("I do not know you, stranger. 🛡️", ephemeral=True)
+                return
+            if self.future.done():
+                await interaction.response.send_message("Already resolved.", ephemeral=True)
+                return
+            await self._resolve(interaction, True)
+
+        @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌")
+        async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if interaction.user.id != AUTHORIZED_USER_ID:
+                await interaction.response.send_message("I do not know you, stranger. 🛡️", ephemeral=True)
+                return
+            if self.future.done():
+                await interaction.response.send_message("Already resolved.", ephemeral=True)
+                return
+            await self._resolve(interaction, False)
+
+        async def on_timeout(self):
+            if not self.future.done():
+                self.future.set_result(False)
+            for child in self.children:
+                child.disabled = True
+            if self.message:
+                try:
+                    await self.message.edit(
+                        content=f"⏰ Timed out (denied): `{self.command}`",
+                        view=self,
+                    )
+                except Exception as e:
+                    log.debug(f"Could not edit timed-out approval message: {e}")
+
     async def approval_callback(command: str, tier: str) -> bool:
-        """Ask for approval via Discord reaction. Returns True if approved."""
+        """Ask for approval via Discord buttons. Returns True if approved.
+
+        Duplicate requests for the same command while a bubble is already
+        in flight attach to the existing Future — the user sees one bubble,
+        clicks once, and every caller gets the same answer.
+        """
+        existing = pending_approvals.get(command)
+        if existing is not None and not existing.future.done():
+            existing.dedup_count += 1
+            log.info(f"Dedup approval ({existing.dedup_count + 1}× for same command): {command[:80]}")
+            return await existing.future
+
         channel = await get_dm_channel()
         if not channel:
             return False
 
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        view = ApprovalView(command, future)
+
         msg = await channel.send(
             f"🔴 **Approval required**\n```\n{command}\n```\n"
-            f"React ✅ to approve or ❌ to deny. (30s timeout → denied)"
+            f"Click a button below. (30s → denied)",
+            view=view,
         )
-        await msg.add_reaction("✅")
-        await msg.add_reaction("❌")
-
-        def check(reaction, user):
-            return (
-                user.id == AUTHORIZED_USER_ID
-                and reaction.message.id == msg.id
-                and str(reaction.emoji) in ("✅", "❌")
-            )
+        view.message = msg
+        pending_approvals[command] = view
 
         try:
-            reaction, _ = await bot.wait_for("reaction_add", timeout=30.0, check=check)
-            approved = str(reaction.emoji) == "✅"
-            await msg.edit(
-                content=f"{'✅ Approved' if approved else '❌ Denied'}: `{command}`"
-            )
-            return approved
-        except asyncio.TimeoutError:
-            await msg.edit(content=f"⏰ Timed out (denied): `{command}`")
-            return False
+            return await future
+        finally:
+            pending_approvals.pop(command, None)
 
     # Wire the approval callback into the agent
     agent.approval_callback = approval_callback
