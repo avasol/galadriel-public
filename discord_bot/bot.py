@@ -317,17 +317,16 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         channel_id = str(ctx.channel.id)
         messages = agent._get_messages(channel_id)
 
-        if len(messages) <= 20:
-            await ctx.reply(f"📚 Only {len(messages)} messages — no compression needed.")
-            return
-
         async with ctx.channel.typing():
             try:
                 result = await compact_conversation(messages, api_key=os.environ.get("ANTHROPIC_API_KEY"))
+                imgs = result.get("images_removed", 0)
+                if result["summaries_created"] == 0 and imgs == 0:
+                    await ctx.reply(f"📚 {len(messages)} messages — nothing to compact.")
+                    return
                 agent.conversations[channel_id] = result["compacted_messages"]
 
                 ratio_pct = int((1 - result["compression_ratio"]) * 100)
-                imgs = result.get("images_removed", 0)
                 img_line = f"\nImages: {imgs} stripped" if imgs else ""
                 await ctx.reply(
                     f"🗜️ **Compacted**\n"
@@ -403,17 +402,16 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         channel_id = str(interaction.channel_id)
         messages = agent._get_messages(channel_id)
 
-        if len(messages) <= 20:
-            await interaction.response.send_message(f"📚 Only {len(messages)} messages — no compression needed.")
-            return
-
         await interaction.response.defer()
         try:
             result = await compact_conversation(messages, api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            imgs = result.get("images_removed", 0)
+            if result["summaries_created"] == 0 and imgs == 0:
+                await interaction.followup.send(f"📚 {len(messages)} messages — nothing to compact.")
+                return
             agent.conversations[channel_id] = result["compacted_messages"]
 
             ratio_pct = int((1 - result["compression_ratio"]) * 100)
-            imgs = result.get("images_removed", 0)
             img_line = f"\nImages: {imgs} stripped" if imgs else ""
             await interaction.followup.send(
                 f"🗜️ **Compacted**\n"
