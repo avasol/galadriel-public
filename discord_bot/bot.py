@@ -22,6 +22,21 @@ SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — Claude's per-image limit
 
 
+def sniff_image_media_type(data: bytes) -> str | None:
+    """Detect image media type from magic bytes. Discord's content_type is
+    unreliable on iOS (reports PNG screenshots as image/jpeg), and Anthropic's
+    API rejects mismatches with a 400."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def chunk_message(text: str) -> list[str]:
     """Split a long message into Discord-safe chunks."""
     if len(text) <= MAX_DISCORD_LENGTH:
@@ -224,12 +239,18 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
                     continue
                 try:
                     image_bytes = await attachment.read()
+                    sniffed = sniff_image_media_type(image_bytes)
+                    if sniffed is None:
+                        skipped.append(f"`{attachment.filename}` (unrecognized image format)")
+                        continue
+                    if sniffed != ct:
+                        log.info(f"📎 Media type corrected: {ct} → {sniffed} ({attachment.filename})")
                     b64 = base64.b64encode(image_bytes).decode("utf-8")
                     content_blocks.append({
                         "type": "image",
-                        "source": {"type": "base64", "media_type": ct, "data": b64},
+                        "source": {"type": "base64", "media_type": sniffed, "data": b64},
                     })
-                    log.info(f"📎 Image attached: {attachment.filename} ({attachment.size} bytes, {ct})")
+                    log.info(f"📎 Image attached: {attachment.filename} ({attachment.size} bytes, {sniffed})")
                 except Exception as e:
                     log.warning(f"Failed to read attachment {attachment.filename}: {e}")
                     skipped.append(f"`{attachment.filename}` (download error)")
