@@ -35,6 +35,51 @@ from .safety import classify_command, format_safety_notice
 log = logging.getLogger("galadriel")
 
 
+# ─── Context-window warnings ──────────────────────────────────────────
+#
+# After each API call we measure input_tokens + cache_read + cache_write —
+# the actual size Claude processed — and compare against the model's context
+# window. If we cross 90% or 95% we nudge the user via a harness-level
+# Discord message suggesting /compact or /new. One nudge per tier crossing;
+# dropping back below 90% resets the tracker so a future crossing re-fires.
+
+CONTEXT_WINDOW_DEFAULT = 200_000  # tokens — applies to Sonnet/Opus/Haiku 4.x
+
+# Only list explicit overrides here. Anything unknown falls back to the default.
+CONTEXT_WINDOW_OVERRIDES = {
+    # 1M-context betas, enabled per-model
+    "claude-opus-4-5-1m": 1_000_000,
+    "claude-sonnet-4-5-1m": 1_000_000,
+}
+
+WARN_TIER_ATTENTION = "attention"  # 90%
+WARN_TIER_URGENT = "urgent"        # 95%
+_TIER_RANK = {WARN_TIER_ATTENTION: 1, WARN_TIER_URGENT: 2}
+
+
+def _resolve_context_window(model: str) -> int:
+    env = os.environ.get("AGENT_CONTEXT_WINDOW")
+    if env and env.isdigit():
+        return int(env)
+    return CONTEXT_WINDOW_OVERRIDES.get(model.lower(), CONTEXT_WINDOW_DEFAULT)
+
+
+def _format_context_warning(pct: int, tier: str, tokens_used: int, window: int) -> str:
+    if tier == WARN_TIER_ATTENTION:
+        return (
+            f"📚 *Context window is at **{pct}%** "
+            f"({tokens_used:,} / {window:,} tokens). "
+            f"Still plenty sharp — but a quick `/compact` or `/new` would keep "
+            f"future turns fast and cheap.*"
+        )
+    return (
+        f"🔥 *Context window is at **{pct}%** "
+        f"({tokens_used:,} / {window:,} tokens) — nearing the cliff where "
+        f"responses risk truncation. Consider `/compact` or `/new` before the "
+        f"next exchange.*"
+    )
+
+
 def _serialize_content(content):
     """Convert SDK ContentBlock objects to plain dicts for reliable serialization."""
     if isinstance(content, str):
@@ -186,6 +231,11 @@ class GaladrielAgent:
         self.approval_callback = approval_callback
         self.last_usage: dict = {}  # Populated after each API call; used by /status
 
+        # Context-window tracking
+        self.context_window = _resolve_context_window(self.model)
+        self.context_warning_callback = None  # async (channel_id, message) -> None
+        self._last_warn_tier: dict[str, str] = {}  # channel_id -> "attention"|"urgent"
+
         # Precompute tools-with-cache once. Tools never change at runtime,
         # so this object can be reused across every API call.
         self.tools = _build_cached_tools()
@@ -289,6 +339,53 @@ class GaladrielAgent:
         messages.append({"role": "user", "content": user_message})
         log.warning("Hard reset: cleared entire conversation, re-seeded with original user message")
 
+    async def _maybe_warn_context(self, response, channel_id: str):
+        """Nudge the user toward /compact or /new when input context crosses
+        90% or 95% of the model's context window. One nudge per tier crossing
+        per channel; dropping below 90% clears the tracker so future crossings
+        re-fire. Silent no-op if no callback is wired up.
+        """
+        if not self.context_warning_callback or self.context_window <= 0:
+            return
+
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+
+        tokens = (
+            getattr(usage, "input_tokens", 0) or 0
+        ) + (
+            getattr(usage, "cache_read_input_tokens", 0) or 0
+        ) + (
+            getattr(usage, "cache_creation_input_tokens", 0) or 0
+        )
+        if tokens <= 0:
+            return
+
+        pct = int(100 * tokens / self.context_window)
+
+        if pct >= 95:
+            new_tier = WARN_TIER_URGENT
+        elif pct >= 90:
+            new_tier = WARN_TIER_ATTENTION
+        else:
+            # Below threshold — reset so future crossings re-warn
+            self._last_warn_tier.pop(channel_id, None)
+            return
+
+        last = self._last_warn_tier.get(channel_id)
+        if last is not None and _TIER_RANK[new_tier] <= _TIER_RANK[last]:
+            # Already warned at this tier (or a higher one) — stay quiet
+            return
+
+        self._last_warn_tier[channel_id] = new_tier
+        msg = _format_context_warning(pct, new_tier, tokens, self.context_window)
+        try:
+            await self.context_warning_callback(channel_id, msg)
+            log.info(f"Context warning fired ({new_tier}, {pct}%) for channel {channel_id}")
+        except Exception as e:
+            log.warning(f"Context warning callback failed: {e}")
+
     def _log_usage(self, response):
         """Log token usage fields so caching behavior is observable.
 
@@ -339,6 +436,7 @@ class GaladrielAgent:
             )
 
             self._log_usage(response)
+            await self._maybe_warn_context(response, channel_id)
 
             # Extract tool IDs from response BEFORE serialization
             tool_ids_from_response = set()

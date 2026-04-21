@@ -185,6 +185,31 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
     # Wire the approval callback into the agent
     agent.approval_callback = approval_callback
 
+    async def context_warning_callback(channel_id: str, message: str):
+        """Deliver a context-utilization nudge to the relevant Discord channel.
+
+        channel_id comes from the agent: a numeric string for real Discord
+        channels, or a synthetic label ("heartbeat", "morning", "goodnight",
+        "default") for scheduler-driven conversations. Numeric goes to that
+        channel; everything else falls back to the authorized-user DM so the
+        nudge still lands somewhere useful.
+        """
+        channel = None
+        if channel_id.isdigit():
+            channel = bot.get_channel(int(channel_id))
+        if channel is None:
+            channel = await get_dm_channel()
+        if channel is None:
+            log.warning(f"Could not resolve channel for context warning (channel_id={channel_id})")
+            return
+        try:
+            await channel.send(message)
+            log.info(f"Context warning delivered to channel {channel.id}")
+        except Exception as e:
+            log.warning(f"Could not send context warning: {e}")
+
+    agent.context_warning_callback = context_warning_callback
+
     # Expose get_dm_channel on the bot so the scheduler can use it
     bot.get_dm_channel = get_dm_channel
 
