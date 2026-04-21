@@ -359,7 +359,12 @@ class GaladrielAgent:
                     for block in (assistant_content if isinstance(assistant_content, list) else [])
                     if isinstance(block, dict) and block.get("type") == "text"
                 ]
-                final_text = "\n".join(text_parts) if text_parts else "(no response)"
+                # Empty text is a legitimate state — Claude may end_turn with
+                # nothing to add after a tool-use cascade. Return empty string
+                # and let callers decide how to surface it. Previously returned
+                # the literal "(no response)" which got piped verbatim to
+                # Discord and confused the user.
+                final_text = "\n".join(text_parts).strip() if text_parts else ""
                 user_summary = user_message[:100] if isinstance(user_message, str) else "[multimodal message]"
                 self.memory.append_daily_log(
                     f"[chat:{channel_id}] User: {user_summary}..."

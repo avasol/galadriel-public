@@ -280,7 +280,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
                         "and keep it brief.",
                         channel_id=channel_id,
                     )
-                    await safe_send(message, response)
+                    await safe_send(message, response or "🌙 *(resting — no words needed)*")
                 except Exception as e:
                     log.exception("Error processing REST command")
                     await safe_send(message, humanize_anthropic_error(e) or f"⚠️ Something went wrong: `{e}`")
@@ -343,6 +343,9 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
                 channel_id = str(message.channel.id)
                 response = await agent.respond(user_input, channel_id=channel_id)
                 log.info(f"📤 Agent response ready ({len(response)} chars), sending to Discord...")
+                if not response.strip():
+                    log.info("Agent returned empty response — substituting placeholder")
+                    response = "🌙 *(nothing to add — acknowledged.)*"
                 await safe_send(message, response)
 
             except Exception as e:

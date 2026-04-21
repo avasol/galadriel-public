@@ -303,9 +303,18 @@ class Scheduler:
     # ── Message Delivery ─────────────────────────────────────────
 
     async def _send_agent_message(self, prompt: str, channel_id: str):
-        """Have the agent generate a response and send it to Discord."""
+        """Have the agent generate a response and send it to Discord.
+
+        If the agent returns an empty response (Claude end_turn with no text —
+        a legitimate "nothing to add" state), we log it and skip the Discord
+        send. Heartbeats that have nothing to report stay silent rather than
+        spamming a placeholder into the DM.
+        """
         try:
             response = await self.agent.respond(prompt, channel_id=channel_id)
+            if not response.strip():
+                log.info(f"Scheduler [{channel_id}] silent tick — nothing to report, skipping send")
+                return
             log.info(f"Scheduler [{channel_id}] response: {response[:100]}...")
 
             # Send to Discord
