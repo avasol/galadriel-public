@@ -1,0 +1,36 @@
+# mempalace.yaml — room structure for the memory palace
+#
+# Copy to mempalace.yaml (without the .example suffix) and edit to match
+# your folder layout. Rooms below follow the default galadriel-public
+# folder names — adjust if you've reorganized.
+#
+# How to seed the palace for the first time:
+#
+#   1. cp mempalace.yaml.example mempalace.yaml
+#   2. pip install -r requirements.txt
+#   3. mempalace init    # creates ~/.mempalace/ and reads this yaml
+#   4. mempalace mine .  # indexes the current directory into rooms below
+#
+# After that, the harness wake-up cache + palace_search tool start
+# returning results on the next API call.
+#
+# See https://github.com/MemPalace/mempalace for the full schema and
+# advanced options (halls, keyword classifiers, custom embedders).
+
+wing: agent
+
+rooms:
+  - name: memory            # daily logs live here (auto-generated)
+    path: memory
+  - name: harness           # core agent code
+    path: harness
+  - name: discord_bot       # Discord gateway
+    path: discord_bot
+  - name: tower             # Flask web UI
+    path: tower
+  - name: cmd               # systemd + install scripts
+    path: cmd
+  - name: configuration     # SOUL.md, MEMORY.md, CONTEXT.md, TOOLS.md
+    path: config
+  - name: general           # fallback for anything else at the project root
+    path: .

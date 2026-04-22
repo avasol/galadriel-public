@@ -113,13 +113,30 @@ class MemoryManager:
         return "\n\n---\n\n".join(parts)
 
     def build_dynamic_text(self) -> str:
-        """Assemble the non-cached portion: daily logs + timestamp.
+        """Assemble the non-cached portion: wake-up + daily logs + timestamp.
 
         Daily logs are placed here (not in the stable block) because they
         grow throughout the day — every append_daily_log() call would
         otherwise invalidate the cache for everything.
+
+        Wake-up is a compact L0/L1 snapshot from the memory palace (MemPalace),
+        regenerated whenever the palace mines new content. Lives in the
+        dynamic block for the same reason: it changes often enough that
+        caching it would just churn the prefix. Disable via env
+        PALACE_WAKE_UP_INJECT=0.
         """
         parts: list[str] = []
+
+        # Wake-up injection (opt-out via env). Fails silently if mempalace
+        # isn't installed or no cache file exists yet.
+        if os.environ.get("PALACE_WAKE_UP_INJECT", "1") != "0":
+            try:
+                from . import palace
+                wake = palace.read_wake_up_text()
+                if wake:
+                    parts.append(f"# Memory Palace — Wake-Up\n\n{wake}")
+            except Exception:
+                pass  # never break prompt assembly on a palace hiccup
 
         today = datetime.now()
         # Chronological order: yesterday first, then today.

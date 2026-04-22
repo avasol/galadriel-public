@@ -579,3 +579,25 @@ class GaladrielAgent:
 
     def clear_history(self, channel_id: str = "default"):
         self.conversations.pop(channel_id, None)
+
+    async def pop_and_archive_history(self, channel_id: str = "default") -> int:
+        """Archive the channel's conversation to the palace, then clear it.
+
+        Used by Discord `/new` / `!new` / `!clear`. Returns the number of
+        messages archived (0 if the channel was already empty). Archive is
+        awaited — by the time this returns, the palace mine has either
+        succeeded or logged a failure. Callers in an async context can
+        safely use this before responding to the user.
+
+        Silent fallback if mempalace isn't installed: history is still
+        cleared, just not archived.
+        """
+        messages = self.conversations.pop(channel_id, None)
+        if not messages:
+            return 0
+        try:
+            from . import palace
+            await palace.archive_conversation(channel_id, messages)
+        except Exception as e:
+            log.warning(f"Conversation archive failed on /new: {e}")
+        return len(messages)

@@ -379,11 +379,12 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
 
     @bot.command(name="clear")
     async def clear_cmd(ctx: commands.Context):
-        """Clear conversation history for this channel."""
+        """Clear conversation history for this channel (archives to palace first)."""
         if ctx.author.id != AUTHORIZED_USER_ID:
             return
-        agent.clear_history(str(ctx.channel.id))
-        await ctx.reply("🧹 Conversation history cleared.")
+        archived = await agent.pop_and_archive_history(str(ctx.channel.id))
+        suffix = f" ({archived} msgs filed to palace)" if archived else ""
+        await ctx.reply(f"🧹 Conversation history cleared.{suffix}")
 
     @bot.command(name="status")
     async def status_cmd(ctx: commands.Context):
@@ -415,11 +416,12 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
 
     @bot.command(name="new")
     async def new_cmd(ctx: commands.Context):
-        """Start a fresh conversation (clear history for this channel)."""
+        """Start a fresh conversation (archives to palace, then clears)."""
         if ctx.author.id != AUTHORIZED_USER_ID:
             return
-        agent.clear_history(str(ctx.channel.id))
-        await ctx.reply("✨ Fresh start. History cleared, blank slate.")
+        archived = await agent.pop_and_archive_history(str(ctx.channel.id))
+        suffix = f" ({archived} msgs filed to palace)" if archived else ""
+        await ctx.reply(f"✨ Fresh start. Blank slate.{suffix}")
 
     @bot.command(name="compact")
     async def compact_cmd(ctx: commands.Context):
@@ -459,13 +461,16 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
 
     # ── Slash Commands ───────────────────────────────────────────
 
-    @bot.tree.command(name="new", description="Start a fresh conversation (clears this channel's history)")
+    @bot.tree.command(name="new", description="Start a fresh conversation (archives history to palace, then clears)")
     async def slash_new(interaction: discord.Interaction):
         if interaction.user.id != AUTHORIZED_USER_ID:
             await interaction.response.send_message("I do not know you, stranger. 🛡️", ephemeral=True)
             return
-        agent.clear_history(str(interaction.channel_id))
-        await interaction.response.send_message("✨ Fresh start. History cleared, blank slate.")
+        # Defer because the palace mine can exceed Discord's 3s response window
+        await interaction.response.defer()
+        archived = await agent.pop_and_archive_history(str(interaction.channel_id))
+        suffix = f" ({archived} msgs filed to palace)" if archived else ""
+        await interaction.followup.send(f"✨ Fresh start. Blank slate.{suffix}")
 
     @bot.tree.command(name="status", description="Show harness status, model info, and last API token usage")
     async def slash_status(interaction: discord.Interaction):

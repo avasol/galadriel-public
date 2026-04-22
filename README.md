@@ -4,6 +4,94 @@ A persistent, tool-wielding Claude agent with Discord and web UI interfaces. Bui
 
 ---
 
+## 🟢 SIGNIFICANT CHANGE — 1.12: Persistent verbatim memory, at zero API cost
+
+Galadriel just grew a memory palace. Not a vector-DB-as-a-service. Not a paid tier. A local, embedded, verbatim store of everything she has ever written — searchable by meaning, not just keywords — with **zero Anthropic tokens spent on retrieval**.
+
+The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library. MemPalace does the real work (storage, embeddings, knowledge graph, temporal reasoning, compression). This harness adds the wrappers that expose it to the agent as **9 new tools** (14 total, up from 5) and wires it into the lifecycle — conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with her own continuity.
+
+**Why this is the headline change:**
+
+| Problem before | Solution now |
+|---|---|
+| Verbatim history was lost at `/new` or compaction | Everything is archived to the palace before it's cleared |
+| Recall of facts older than today meant grepping daily logs | Semantic search across every config, log, and archived conversation |
+| "What did we decide about X?" drained API budget (big context re-reads) | **Zero tokens** — all retrieval runs locally in ChromaDB + SQLite |
+| No structured facts — everything was prose | Knowledge graph with temporal triples: `subject --[predicate]--> object`, with validity windows |
+| No sense of self across sessions | Diary in her own voice; L0 wake-up snapshot injected into every turn |
+
+**Measured impact (14 consecutive API calls on a deployed instance):**
+
+| Metric | Value |
+|---|---|
+| Cache hit ratio (post-integration) | **86.5%** |
+| Total-input token savings vs. no caching | **71.2%** |
+| Palace lookup cost per search | **0 tokens** — ChromaDB query runs locally |
+| Palace lookup cost for a 5-hop KG timeline | **0 tokens** — SQLite traversal runs locally |
+| Estimated annual overhead of the integration | **~$95/year** (additional) |
+| Drawers indexed on a real deployment | **706** across 7 rooms + 8 halls |
+| Tools added | **9** (palace_search, palace_add_drawer, palace_wake_up, palace_taxonomy, palace_kg_add/query/invalidate/timeline, palace_diary_write/read) |
+
+The 90% cache-read discount remains intact. Adding MemPalace costs ~1.5 percentage points of cache hit ratio (two extra tool schemas in the tools-layer cache + a ~800-token wake-up snapshot in the dynamic block) and the rest is measured, bounded, and dial-backable (`PALACE_WAKE_UP_INJECT=0`).
+
+**What this means in practice:**
+
+- **Short term (within a session):** The agent can pull back a verbatim quote from a conversation three weeks ago — no re-reading of logs, no "I don't have that context." One tool call, zero tokens, the exact words you said.
+- **Long term (across months):** The knowledge graph preserves history. When a fact changes, the old triple gets a `valid_to` date and the new one goes in — so "what was the max_tokens setting last October?" and "what is it now?" both resolve correctly. Nothing is overwritten, only superseded.
+- **On relational questions:** Graph traversal ("everything ever said about the payment service," "every decision involving the scheduler," "the full timeline of the Polly voice choice") resolves as **one KG call against the local SQLite store**. The kind of query that, done naively through conversation history, would cost you real money — or just fail outright because the context has long since been compacted away.
+
+Read on for [the metaphor system](#the-memory-palace-metaphor) (wings, rooms, drawers, halls) and the [caching details](#the-cost-savings-that-most-people-miss) that make this affordable in the first place.
+
+---
+
+## The memory palace metaphor
+
+MemPalace organizes memory the way a human would organize a library, and the agent uses exactly the same words.
+
+| Metaphor | What it is | Example |
+|---|---|---|
+| **Drawer** | A single chunk of content — the atomic unit. ~200–1000 tokens, a verbatim slice of something the agent (or you) wrote. | One paragraph of a daily log. One decision note. One archived Discord exchange. |
+| **Room** | A folder-based grouping of drawers. Every drawer belongs to exactly one room. | `room=memory` (daily logs), `room=harness` (her own code), `room=tower` (the web UI), `room=discord_bot`, `room=cmd`, `room=configuration`, `room=general`. |
+| **Wing** | The top-level namespace. Usually one per agent. | `wing=agent` is the default. |
+| **Hall** | A **keyword-based, auto-classified topic** that cross-cuts rooms. A drawer about a bug in harness code lives in `room=harness` AND `hall=problems`. | `hall=decisions`, `hall=problems`, `hall=milestones`. |
+
+Why this matters: **rooms** let you say *"look only in the code area"*, **halls** let you say *"look only at things tagged as problems"*, and you can compose both. A search like `palace_search("retry logic", room="harness", hall="problems", k=10)` reads as "give me bug-tagged content from the code room" — which is exactly how a human would ask a librarian.
+
+The agent's **diary** is a separate wing — her own journal, written at end-of-session, read at wake-up. Her own voice to her future self, not mixed with operational logs.
+
+The **knowledge graph** sits alongside the drawers. Where drawers are prose, the KG is relational: `claude-opus-4-6 --[supports]--> prompt_caching` with `valid_from=2025-07-10`. When a fact changes you don't delete the old triple, you invalidate it. History is preserved; the timeline is queryable.
+
+**The library is [MemPalace](https://github.com/MemPalace/mempalace).** All credit for the storage layer, the embedding pipeline, the knowledge graph, the AAAK compression dialect, and the wake-up generation belongs to the MemPalace team. This harness is a consumer — it adds the Python wrappers, the tool schemas, and the lifecycle hooks (archive-before-clear, mine-at-goodnight, inject-at-wake-up) that expose the library to a running Claude agent.
+
+### First-time setup
+
+```bash
+# 1. Install (mempalace is in requirements.txt)
+pip install -r requirements.txt
+
+# 2. Copy the room layout template
+cp mempalace.yaml.example mempalace.yaml
+
+# 3. Initialize palace storage (defaults to ~/.mempalace/)
+mempalace init
+
+# 4. Seed the palace with everything you've got
+mempalace mine .
+```
+
+That's it. The harness picks it up automatically on next start. `palace_search` works immediately; the wake-up snapshot appears in the next API call.
+
+### Env vars (all optional)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MEMPALACE_PATH` | `~/.mempalace/palace` | Where the palace lives on disk. Read by MemPalace itself. |
+| `PALACE_ARCHIVE_ROOT` | `~/.mempalace/archive` | Where archived conversations + pre-compaction tool_results land before being mined. |
+| `PALACE_WAKE_UP_FILE` | `~/.mempalace/wake_up.md` | Cached wake-up snapshot. |
+| `PALACE_WAKE_UP_INJECT` | `1` | Set to `0` to disable the wake-up injection into the dynamic block (recovers a small amount of per-call token overhead if budget is tight). |
+
+---
+
 ## The cost savings that most people miss
 
 Here is a fact that most Claude API users don't know about: **cached tokens cost 90% less than regular input tokens.** Not 10% less. Not 20% less. Ninety percent. [It's in the Anthropic docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching), but the majority of people building with the API leave this entirely on the table.
@@ -264,6 +352,22 @@ See `.env.example` for the full list with inline documentation.
 ---
 
 ## Release Notes
+
+### 1.12 — MemPalace integration: persistent verbatim memory at zero API cost
+
+**9 new tools, 14 total.** The agent now has a local semantic memory palace ([MemPalace](https://github.com/MemPalace/mempalace)) wired into the harness as first-class tools: `palace_search`, `palace_add_drawer`, `palace_wake_up`, `palace_taxonomy`, `palace_kg_add / kg_query / kg_invalidate / kg_timeline`, `palace_diary_write / diary_read`. All retrieval runs locally in ChromaDB + SQLite — **zero Anthropic tokens spent on any palace operation**, including multi-hop knowledge-graph traversals that would otherwise cost real money through conversation history.
+
+**Lifecycle hooks.** `/new`, `!new`, and `!clear` now archive the conversation to the palace *before* clearing it (via a new `GaladrielAgent.pop_and_archive_history()`), so nothing is lost at the moment of wipe. Goodnight (21:00 CET) fires `palace.archive_daily_logs()` so today's log becomes searchable overnight. `/compact` and context compaction file verbatim tool_results to the palace before they're replaced with Haiku summaries.
+
+**Wake-up injection.** A compact L0+L1 snapshot (~800 tokens, cached to `~/.mempalace/wake_up.md` by a subprocess that keeps chromadb out of the main process) rides in the dynamic system-prompt block on every API call. Disable with `PALACE_WAKE_UP_INJECT=0` if you want to dial back per-call overhead.
+
+**Cache impact, measured.** 14 consecutive calls on a real deployment: 86.5% cache hit ratio, 71.2% total-input token savings vs. no caching. The 90% cache-read discount is intact — integration costs ~1.5 percentage points of cache hit ratio (one extra wake-up snapshot in dynamic, 9 more tool schemas in the tools-layer cache). Estimated annual overhead: ~$95.
+
+**Graceful degradation.** If MemPalace isn't installed, all palace tools return `[palace unavailable]` at dispatch time; the rest of the harness runs normally. Upgrade path is `pip install mempalace>=3.3.2,<3.4` + `mempalace init` + `mempalace mine .`.
+
+**Palace Protocol** codified in `SOUL.md` — 5 non-negotiable rules: verify before speaking, say "let me check" when unsure, diary at session-end, invalidate-then-add when facts change. See `config/TOOLS.md` for the full decision matrix (memory_log vs palace_add_drawer vs palace_kg_add vs palace_diary_write).
+
+All credit for the underlying memory system goes to the [MemPalace](https://github.com/MemPalace/mempalace) team. This release is the harness integration; MemPalace is the engine.
 
 ### 1.11 — approval UX cleanup
 

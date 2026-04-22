@@ -2,3 +2,4 @@ anthropic>=0.52.0
 discord.py>=2.5.0
 Flask>=3.0.0
 python-dotenv>=1.0.0
+mempalace>=3.3.2,<3.4
