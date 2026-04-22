@@ -8,7 +8,7 @@ A persistent, tool-wielding Claude agent with Discord and web UI interfaces. Bui
 
 Galadriel just grew a memory palace. Not a vector-DB-as-a-service. Not a paid tier. A local, embedded, verbatim store of everything she has ever written — searchable by meaning, not just keywords — with **zero Anthropic tokens spent on retrieval**.
 
-The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library. MemPalace does the real work (storage, embeddings, knowledge graph, temporal reasoning, compression). This harness adds the wrappers that expose it to the agent as **9 new tools** (14 total, up from 5) and wires it into the lifecycle — conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with her own continuity.
+The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library. MemPalace does the real work (storage, embeddings, knowledge graph, temporal reasoning, compression). This harness adds the wrappers that expose it to the agent as **10 new tools** (14 total, up from 4) and wires it into the lifecycle — conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with her own continuity.
 
 **Why this is the headline change:**
 
@@ -30,9 +30,9 @@ The integration is built on [**MemPalace**](https://github.com/MemPalace/mempala
 | Palace lookup cost for a 5-hop KG timeline | **0 tokens** — SQLite traversal runs locally |
 | Estimated annual overhead of the integration | **~$95/year** (additional) |
 | Drawers indexed on a real deployment | **706** across 7 rooms + 8 halls |
-| Tools added | **9** (palace_search, palace_add_drawer, palace_wake_up, palace_taxonomy, palace_kg_add/query/invalidate/timeline, palace_diary_write/read) |
+| Tools added | **10** (palace_search, palace_add_drawer, palace_wake_up, palace_taxonomy, palace_kg_add/query/invalidate/timeline, palace_diary_write/read) |
 
-The 90% cache-read discount remains intact. Adding MemPalace costs ~1.5 percentage points of cache hit ratio (two extra tool schemas in the tools-layer cache + a ~800-token wake-up snapshot in the dynamic block) and the rest is measured, bounded, and dial-backable (`PALACE_WAKE_UP_INJECT=0`).
+The 90% cache-read discount remains intact. Adding MemPalace costs ~1.5 percentage points of cache hit ratio (10 extra tool schemas in the tools-layer cache + a ~800-token wake-up snapshot in the dynamic block) and the rest is measured, bounded, and dial-backable (`PALACE_WAKE_UP_INJECT=0`).
 
 **What this means in practice:**
 
@@ -102,7 +102,7 @@ Galadriel exploits this with three cache breakpoints, stacked deliberately:
 
 | Cache layer | What it covers | Behaviour |
 |---|---|---|
-| **Tool definitions** | All four tool schemas | Cached once at startup, never re-sent |
+| **Tool definitions** | All 14 tool schemas (4 core + 10 palace) | Cached once at startup, never re-sent |
 | **Stable system block** | Personality + memory + identity files | Marked `cache_control: ephemeral`; hits at ~100% after first call |
 | **Trailing message history** | The growing conversation | Attached per-call; cache hit rate rises every turn |
 
@@ -168,11 +168,12 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 
 - **Discord gateway** — DMs, channel mentions, or a dedicated channel; gated by user ID
 - **Web UI (Tower)** — local chat interface and dashboard at `localhost:8080`
-- **Tool use** — shell execution, file read/write, memory logging; all async, non-blocking
+- **Tool use** — 14 tools: shell execution, file read/write, memory logging, and 10 [MemPalace](https://github.com/MemPalace/mempalace) tools (semantic search, knowledge graph, diary, taxonomy); all async, non-blocking
+- **Persistent verbatim memory** — local MemPalace integration with wings/rooms/halls/drawers, zero-token retrieval, archive-before-clear on `/new`, goodnight mine of daily logs, wake-up snapshot in the dynamic block
 - **Safety tiers** — green (auto), yellow (notify), red (Discord reaction approval required)
 - **Scheduler** — morning briefing, goodnight, configurable heartbeat
 - **Job watcher** — monitors `/tmp/galadriel-jobs/*.done` markers and reports completions
-- **Compaction** — Haiku-powered context compression on demand
+- **Compaction** — Haiku-powered context compression on demand (archives verbatim tool_results to the palace before summarizing)
 - **Three-layer prompt caching** — automatically managed, always active
 
 ---
@@ -184,14 +185,19 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 git clone https://github.com/avasol/galadriel-public.git
 cd galadriel-public
 
-# 2. Install
+# 2. Install (includes mempalace — dependency of the memory palace)
 pip install -r requirements.txt
 
 # 3. Configure
 cp .env.example .env
 # Edit .env — set ANTHROPIC_API_KEY at minimum
 
-# 4. Run
+# 4. (Optional but recommended) Seed the memory palace
+cp mempalace.yaml.example mempalace.yaml
+mempalace init              # creates ~/.mempalace/
+mempalace mine .            # indexes this repo into the palace
+
+# 5. Run
 python main.py
 ```
 
@@ -199,31 +205,39 @@ python main.py
 
 **Full mode:** Set both `ANTHROPIC_API_KEY` and `DISCORD_BOT_TOKEN`.
 
+**Skipping step 4?** That's fine — the harness runs normally and palace tools just return `[palace unavailable]` until you seed. You can do it any time.
+
 ---
 
 ## Architecture
 
 ```
-main.py               Entry point — wires all components, starts Discord + Tower
+main.py                   Entry point — wires all components, starts Discord + Tower
 harness/
-  agent.py            Core agent loop: Anthropic API, tool use, cache management
-  memory.py           Stable + dynamic system prompt blocks; daily memory logs
-  tools.py            Tool execution: run_shell, read_file, write_file, memory_log
-  safety.py           Command classification (green / yellow / red)
-  compaction.py       Haiku-powered context compression
-  scheduler.py        Morning briefing, goodnight, configurable heartbeat
-  job_watcher.py      Background job completion notifications
+  agent.py                Core agent loop: Anthropic API, tool use, cache management
+  memory.py               Stable + dynamic system prompt blocks; daily memory logs
+  tools.py                14 tools: run_shell, read_file, write_file, memory_log + 10 palace_*
+  palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy
+  safety.py               Command classification (green / yellow / red)
+  compaction.py           Haiku-powered context compression (archives to palace first)
+  scheduler.py            Morning briefing, goodnight (mines daily logs), heartbeat
+  job_watcher.py          Background job completion notifications
+  error_humanizer.py      Readable Anthropic API error mapping
 discord_bot/
-  bot.py              Discord gateway, approval reactions, slash + prefix commands
+  bot.py                  Discord gateway, approval buttons, slash + prefix commands
 tower/
-  app.py              Flask dashboard + REST API
-  templates/          Tower UI HTML
-  static/             CSS
+  app.py                  Flask dashboard + REST API
+  templates/              Tower UI HTML
+  static/                 CSS
 config/
-  SOUL.md             Agent personality and values (your main customization point)
-  MEMORY.md           Long-term memory (agent-maintained)
-  CONTEXT.md          Your project context — fill this in to activate Opus caching
-memory/               Daily logs — auto-generated, gitignored
+  SOUL.md                 Agent personality and values (your main customization point)
+  MEMORY.md               Long-term memory (agent-maintained)
+  CONTEXT.md              Your project context — fill this in to activate Opus caching
+  TOOLS.md                Palace tool reference + decision matrix (read by agent on every call)
+  visions/                Optional per-project context files
+memory/                   Daily logs — auto-generated, gitignored
+mempalace.yaml.example    Room-structure template for `mempalace init` (copy to mempalace.yaml)
+~/.mempalace/             Palace storage (created by `mempalace init`) — overridable via MEMPALACE_PATH
 ```
 
 ---
@@ -270,8 +284,8 @@ Fill in your real values and she'll orient herself correctly from the first mess
 
 | Command | Description |
 |---------|-------------|
-| `/new` | Clear this channel's history and start fresh |
-| `/compact` | Compress history with Haiku — reports token reduction |
+| `/new` | Archive conversation to the palace, then start fresh |
+| `/compact` | Compress history with Haiku (archives verbatim tool_results to the palace first) — reports token reduction |
 | `/status` | Model, memory usage, last API token breakdown, scheduler state |
 
 ### Prefix commands
@@ -279,9 +293,9 @@ Fill in your real values and she'll orient herself correctly from the first mess
 | Command | Description |
 |---------|-------------|
 | `!status` | Same as `/status` |
-| `!clear` | Clear history for this channel |
-| `!new` | Fresh start |
-| `!compact` | Compress history |
+| `!clear` | Archive to palace, then clear history for this channel |
+| `!new` | Same as `!clear` — archive then fresh start |
+| `!compact` | Compress history (with palace archive of long tool_results) |
 
 ### Verbal
 
@@ -330,6 +344,10 @@ See `.env.example` for the full list with inline documentation.
 | `TOWER_SECRET_KEY` | No | Flask session secret — change this |
 | `AGENT_MODEL` | No | Claude model (default: `claude-opus-4-6`) |
 | `AGENT_MAX_TOKENS` | No | Max output tokens per call (default: `8192`) |
+| `MEMPALACE_PATH` | No | Palace directory — read by the [MemPalace](https://github.com/MemPalace/mempalace) library itself (default: `~/.mempalace/palace`) |
+| `PALACE_ARCHIVE_ROOT` | No | Where archived conversations + pre-compaction tool_results land before mining (default: `~/.mempalace/archive`) |
+| `PALACE_WAKE_UP_FILE` | No | Cached wake-up snapshot path (default: `~/.mempalace/wake_up.md`) |
+| `PALACE_WAKE_UP_INJECT` | No | Set to `0` to disable injection of the wake-up snapshot into the dynamic system-prompt block (default: `1` — enabled) |
 
 ---
 
@@ -355,13 +373,13 @@ See `.env.example` for the full list with inline documentation.
 
 ### 1.12 — MemPalace integration: persistent verbatim memory at zero API cost
 
-**9 new tools, 14 total.** The agent now has a local semantic memory palace ([MemPalace](https://github.com/MemPalace/mempalace)) wired into the harness as first-class tools: `palace_search`, `palace_add_drawer`, `palace_wake_up`, `palace_taxonomy`, `palace_kg_add / kg_query / kg_invalidate / kg_timeline`, `palace_diary_write / diary_read`. All retrieval runs locally in ChromaDB + SQLite — **zero Anthropic tokens spent on any palace operation**, including multi-hop knowledge-graph traversals that would otherwise cost real money through conversation history.
+**10 new tools, 14 total.** The agent now has a local semantic memory palace ([MemPalace](https://github.com/MemPalace/mempalace)) wired into the harness as first-class tools: `palace_search`, `palace_add_drawer`, `palace_wake_up`, `palace_taxonomy`, `palace_kg_add / kg_query / kg_invalidate / kg_timeline`, `palace_diary_write / diary_read`. All retrieval runs locally in ChromaDB + SQLite — **zero Anthropic tokens spent on any palace operation**, including multi-hop knowledge-graph traversals that would otherwise cost real money through conversation history.
 
 **Lifecycle hooks.** `/new`, `!new`, and `!clear` now archive the conversation to the palace *before* clearing it (via a new `GaladrielAgent.pop_and_archive_history()`), so nothing is lost at the moment of wipe. Goodnight (21:00 CET) fires `palace.archive_daily_logs()` so today's log becomes searchable overnight. `/compact` and context compaction file verbatim tool_results to the palace before they're replaced with Haiku summaries.
 
 **Wake-up injection.** A compact L0+L1 snapshot (~800 tokens, cached to `~/.mempalace/wake_up.md` by a subprocess that keeps chromadb out of the main process) rides in the dynamic system-prompt block on every API call. Disable with `PALACE_WAKE_UP_INJECT=0` if you want to dial back per-call overhead.
 
-**Cache impact, measured.** 14 consecutive calls on a real deployment: 86.5% cache hit ratio, 71.2% total-input token savings vs. no caching. The 90% cache-read discount is intact — integration costs ~1.5 percentage points of cache hit ratio (one extra wake-up snapshot in dynamic, 9 more tool schemas in the tools-layer cache). Estimated annual overhead: ~$95.
+**Cache impact, measured.** 14 consecutive calls on a real deployment: 86.5% cache hit ratio, 71.2% total-input token savings vs. no caching. The 90% cache-read discount is intact — integration costs ~1.5 percentage points of cache hit ratio (one extra wake-up snapshot in dynamic, 10 more tool schemas in the tools-layer cache). Estimated annual overhead: ~$95.
 
 **Graceful degradation.** If MemPalace isn't installed, all palace tools return `[palace unavailable]` at dispatch time; the rest of the harness runs normally. Upgrade path is `pip install mempalace>=3.3.2,<3.4` + `mempalace init` + `mempalace mine .`.
 

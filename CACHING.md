@@ -25,11 +25,11 @@ model's minimum cacheable length:
 | Claude Sonnet 4.6 | 2,048 tokens |
 | Claude Sonnet 4.5 / 4 | 1,024 tokens |
 
-SOUL.md + MEMORY.md alone is typically 1–2K tokens — below the Opus threshold.
-This is why `config/CONTEXT.md` exists: fill it with your project details
-(architecture, goals, known issues, key paths) and the stable block will
-comfortably clear 4K. You get the context for free (cache reads), and Galadriel
-never needs tool calls to reference it.
+SOUL.md + MEMORY.md + TOOLS.md alone is typically 2–3K tokens — still below
+the Opus threshold. This is why `config/CONTEXT.md` exists: fill it with your
+project details (architecture, goals, known issues, key paths) and the stable
+block will comfortably clear 4K. You get the context for free (cache reads),
+and Galadriel never needs tool calls to reference it.
 
 If you see `cache_read=0` and `cache_write=0` in every log line, your stable
 block is under the minimum. Add content to CONTEXT.md.
@@ -61,6 +61,8 @@ block is under the minimum. Add content to CONTEXT.md.
 - Any other `*.md` in `config/` — auto-loaded alphabetically
 
 **Dynamic content** (not cached, but small):
+- MemPalace wake-up snapshot (if installed and seeded; ~800 tokens). Disable
+  with `PALACE_WAKE_UP_INJECT=0` to recover this overhead.
 - Yesterday's and today's daily logs
 - Current timestamp
 
