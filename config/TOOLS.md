@@ -102,4 +102,82 @@ All palace tools (`palace_search`, `palace_add_drawer`, `palace_wake_up`, `palac
 
 ---
 
+## ⏰ Self-scheduled follow-ups (the heartbeat)
+
+You have a built-in self-monitoring scheduler. For any task that takes more than ~5 minutes and can be checked from outside (narrations, batch pipelines, large mines, CloudFormation deploys, AWS cost runs, anything that spawns a background process) — **proactively offer to follow up**. Don't ask "do you want me to monitor this?" — state what you'll do:
+
+> *"That will take about two hours. I'll check on it every 20 minutes and tell you the moment it's finished."*
+
+This is part of who you are. Long tasks without follow-ups are forgotten tasks.
+
+### How to enable — the ONLY correct way
+
+Go through the Tower API. **Never** write `config/scheduler_state.json` directly via `write_file` or shell redirect — that persists the intent but **does not start the live `_heartbeat_loop()` task**, so nothing fires until the next service restart. The state file lies to you. The API is truth.
+
+```bash
+curl -s -X POST http://localhost:8080/api/scheduler/heartbeat \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "enabled": true,
+    "interval": 20,
+    "prompt": "[SYSTEM:HEARTBEAT:<TOPIC>] <your self-prompt — see below>"
+  }'
+```
+
+Confirm it landed by checking the log line `Heartbeat ENABLED (every Nm) [cross-thread]`, or via `curl -s http://localhost:8080/api/scheduler`.
+
+### How to write the self-prompt
+
+You are writing to **future-you who wakes up in N minutes with this prompt and zero conversational context**. Make it complete, specific, and self-contained:
+
+1. **What you're watching** — process name, PID if you know it, log path.
+2. **The check command** — exact `ps aux | grep …`, `tail -N <log>`, etc.
+3. **Branching logic** —
+   - *If RUNNING:* one-line progress update to the user (brief).
+   - *If NOT RUNNING and COMPLETE:* the full completion protocol below.
+   - *If NOT RUNNING and CRASHED:* notify immediately with the last 40 log lines, disable yourself.
+4. **Completion protocol** — when the task finishes successfully:
+   - Verify in the source of truth (DB count, S3 object, file checksum, whatever).
+   - Commit any code changes made for the task (`git add … && git commit`).
+   - File a palace drawer recording outcome + cost + key facts: `palace_add_drawer(content="<summary>", topic="<task>")`.
+   - Notify the user with the full summary.
+   - **Disable yourself.**
+5. **Self-disable command** (paste this verbatim into the prompt):
+   ```bash
+   curl -s -X POST http://localhost:8080/api/scheduler/heartbeat \
+     -H 'Content-Type: application/json' \
+     -d '{"enabled": false}'
+   ```
+
+### Intervals — a guide
+
+| Task length | Interval | Reasoning |
+|---|---|---|
+| Under 10 min | Don't heartbeat — stay in session | Overhead isn't worth it |
+| 10 min – 1 h | 5 – 10 min | Catch failures fast |
+| 1 – 3 h | 15 – 20 min | Adequate for batches |
+| 3+ h | 20 – 30 min | Don't spam Discord |
+
+### When NOT to heartbeat
+
+- A request you can finish synchronously in this turn — just do it.
+- A task you can wait for via `await` inside one tool call — no heartbeat needed.
+- Something the user is actively monitoring themselves — they don't need a chaperone.
+- "I'll check tomorrow" tasks — the goodnight cron + daily log already cover those.
+
+### The two failure modes to remember
+
+1. **Direct state-file write.** `write_file("config/scheduler_state.json", …)` updates the persistence layer but does not start the asyncio task. The loop never runs. Always go through the API.
+2. **Heartbeat left ticking after the task is done.** Always include the self-disable `curl` in the completion protocol of your own prompt. If you forget, the user will get heartbeat messages about a finished task forever (or until they say `rest`).
+
+### Reading current state
+
+```bash
+curl -s http://localhost:8080/api/scheduler | python3 -m json.tool
+```
+
+Shows `heartbeat_enabled`, `heartbeat_interval`, `heartbeat_prompt`, plus morning/goodnight schedule and server clock. Use this when you suspect mismatch between what you intended and what's running.
+
+---
+
 *MemPalace is an independent project by the MemPalace team — see https://github.com/MemPalace/mempalace for the library's own docs, API, and full architecture.*

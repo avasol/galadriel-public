@@ -23,6 +23,165 @@ SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — Claude's per-image limit
 
 
+# ─── Status report — pricing + formatter ────────────────────────────
+#
+# Prices in USD per million tokens, current Anthropic public pricing.
+# Keep keys matched to the AGENT_MODEL values actually in use.
+MODEL_PRICING_USD_PER_MTOK = {
+    # Opus family
+    "claude-opus-4-7": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
+    "claude-opus-4-6": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
+    "claude-opus-4-5": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
+    # Sonnet family
+    "claude-sonnet-4-6": {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
+    "claude-sonnet-4-5": {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
+    "claude-sonnet-4":   {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
+    # Haiku family
+    "claude-haiku-4-5":  {"input": 0.80, "cache_read": 0.08, "cache_write": 1.00, "output": 4.00},
+}
+
+
+def _price_call(usage: dict, model: str) -> tuple[float, float, float]:
+    """Return (actual_cost_usd, hypothetical_no_cache_cost_usd, savings_pct)
+    for a single API call's usage dict {input, cache_read, cache_write, output}.
+
+    Falls back to Sonnet pricing if the model is unknown — still gives a
+    usable estimate rather than failing. Returns (0, 0, 0) on malformed usage.
+    """
+    prices = MODEL_PRICING_USD_PER_MTOK.get(model)
+    if prices is None:
+        # Try prefix matches (e.g. claude-sonnet-4-6-20250929)
+        for k, v in MODEL_PRICING_USD_PER_MTOK.items():
+            if model.startswith(k):
+                prices = v
+                break
+    if prices is None:
+        prices = MODEL_PRICING_USD_PER_MTOK["claude-sonnet-4-6"]
+
+    try:
+        inp = usage.get("input", 0) or 0
+        cr = usage.get("cache_read", 0) or 0
+        cw = usage.get("cache_write", 0) or 0
+        out = usage.get("output", 0) or 0
+    except AttributeError:
+        return (0.0, 0.0, 0.0)
+
+    actual = (
+        inp * prices["input"]
+        + cr * prices["cache_read"]
+        + cw * prices["cache_write"]
+        + out * prices["output"]
+    ) / 1_000_000
+    no_cache = ((inp + cr + cw) * prices["input"] + out * prices["output"]) / 1_000_000
+    savings_pct = (1 - actual / no_cache) * 100 if no_cache > 0 else 0.0
+    return (actual, no_cache, savings_pct)
+
+
+def _progress_bar(pct: float, width: int = 20) -> str:
+    """20-char Unicode block progress bar with tier emoji."""
+    pct = max(0.0, min(100.0, pct))
+    filled = int(round(width * pct / 100))
+    bar = "█" * filled + "░" * (width - filled)
+    if pct >= 90:
+        tier = "🔴"
+    elif pct >= 75:
+        tier = "🟡"
+    else:
+        tier = "🟢"
+    return f"{tier} `[{bar}]` **{pct:.0f}%**"
+
+
+def _format_status_report(agent, scheduler) -> str:
+    """Build the `/status` + `!status` report.
+
+    Sections:
+      - Model + per-model cache minimum + context window
+      - Context utilization bar (from last call's total input)
+      - Cache efficiency + cost + savings
+      - Active channels (top 5 by message count)
+      - Output-ceiling streak state (if non-zero)
+      - Post-recovery advisory (if any channel has a pending tag)
+      - Scheduler (if wired)
+    """
+    lines: list[str] = []
+    lines.append("🧝‍♀️ **Galadriel Harness Status**")
+    lines.append(f"**Model:** `{agent.model}` · context window **{agent.context_window:,}** tok · max_output **{agent.max_tokens:,}** tok")
+    lines.append("")
+
+    # ── Context window (from last call) ──
+    if agent.last_usage:
+        u = agent.last_usage
+        total_in = (u.get("input", 0) or 0) + (u.get("cache_read", 0) or 0) + (u.get("cache_write", 0) or 0)
+        pct = 100 * total_in / agent.context_window if agent.context_window > 0 else 0
+        lines.append("**Context (last call)**")
+        lines.append(_progress_bar(pct))
+        lines.append(f"`{total_in:>7,}` / `{agent.context_window:,}` tokens")
+        lines.append("")
+
+        # ── Cache efficiency + cost ──
+        cacheable_in = total_in
+        cache_read = u.get("cache_read", 0) or 0
+        hit_pct = 100 * cache_read / cacheable_in if cacheable_in > 0 else 0
+        actual, no_cache, savings_pct = _price_call(u, agent.model)
+        lines.append("**Caching (last call)**")
+        lines.append(
+            f"in=`{u.get('input', 0)}`  cache_read=`{cache_read:,}`  "
+            f"cache_write=`{u.get('cache_write', 0):,}`  out=`{u.get('output', 0)}`"
+        )
+        lines.append(
+            f"Hit ratio: **{hit_pct:.1f}%** · "
+            f"Cost: **${actual:.4f}**  (vs **${no_cache:.4f}** uncached = **{savings_pct:.0f}% saved**)"
+        )
+        lines.append("")
+    else:
+        lines.append("**Context:** *(no API calls yet this session)*")
+        lines.append("")
+
+    # ── Channels ──
+    channels = agent.conversations
+    total_msgs = sum(len(m) for m in channels.values())
+    lines.append(f"**Channels** ({len(channels)} active · {total_msgs} msgs total)")
+    if channels:
+        sorted_ch = sorted(channels.items(), key=lambda kv: -len(kv[1]))
+        for cid, msgs in sorted_ch[:5]:
+            label = cid if len(cid) <= 20 else cid[:6] + "…" + cid[-4:]
+            lines.append(f"• `{label}` — {len(msgs)} msgs")
+        if len(sorted_ch) > 5:
+            remaining = sum(len(m) for _, m in sorted_ch[5:])
+            lines.append(f"• *+{len(sorted_ch) - 5} more channels, {remaining} msgs*")
+    else:
+        lines.append("*(none)*")
+    lines.append("")
+
+    # ── Output-ceiling streak ──
+    streaks = getattr(agent, "_output_ceiling_streak", {}) or {}
+    active_streaks = {cid: n for cid, n in streaks.items() if n > 0}
+    if active_streaks:
+        parts = [f"`{cid[:20]}`: {n}/2" for cid, n in active_streaks.items()]
+        lines.append(f"**Output ceiling:** 🟡 near-ceiling streak — {', '.join(parts)}")
+    else:
+        lines.append("**Output ceiling:** ✅ healthy")
+
+    # ── Post-recovery advisory ──
+    recovery_tags = getattr(agent, "_post_recovery_archive_tag", {}) or {}
+    if recovery_tags:
+        tags_str = ", ".join(f"`{t}`" for t in recovery_tags.values())
+        lines.append(f"**Post-recovery advisory:** ⚠️ active — archive tags: {tags_str}")
+    lines.append("")
+
+    # ── Scheduler ──
+    if scheduler:
+        s = scheduler.get_status()
+        hb_emoji = "🟢 ON" if s["heartbeat_enabled"] else "🔴 OFF"
+        custom = " · custom prompt" if s.get("heartbeat_prompt") else ""
+        lines.append("**Scheduler**")
+        lines.append(f"Heartbeat: {hb_emoji} (every {s['heartbeat_interval']}m{custom})")
+        lines.append(f"Morning: {s['morning_time']} · Goodnight: {s['goodnight_time']}")
+        lines.append(f"Now: {s['server_time_cet']} · {'Workday' if s['is_workday'] else 'Weekend'}")
+
+    return "\n".join(lines)
+
+
 def sniff_image_media_type(data: bytes) -> str | None:
     """Detect image media type from magic bytes. Discord's content_type is
     unreliable on iOS (reports PNG screenshots as image/jpeg), and Anthropic's
@@ -391,28 +550,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         """Show agent status."""
         if ctx.author.id != AUTHORIZED_USER_ID:
             return
-        channels = len(agent.conversations)
-        total_msgs = sum(len(m) for m in agent.conversations.values())
-
-        sched_info = ""
-        if scheduler:
-            s = scheduler.get_status()
-            hb = "🟢 ON" if s["heartbeat_enabled"] else "🔴 OFF"
-            sched_info = (
-                f"\n**Heartbeat:** {hb} (every {s['heartbeat_interval']}m)\n"
-                f"**Morning:** {s['morning_time']}\n"
-                f"**Goodnight:** {s['goodnight_time']}\n"
-                f"**CET Time:** {s['server_time_cet']}\n"
-                f"**Workday:** {'Yes' if s['is_workday'] else 'No'}"
-            )
-
-        await ctx.reply(
-            f"🧝‍♀️ **Galadriel Harness Status**\n"
-            f"Model: `{agent.model}`\n"
-            f"Active channels: {channels}\n"
-            f"Messages in memory: {total_msgs}\n"
-            f"{sched_info}"
-        )
+        await ctx.reply(_format_status_report(agent, scheduler))
 
     @bot.command(name="new")
     async def new_cmd(ctx: commands.Context):
@@ -472,44 +610,12 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         suffix = f" ({archived} msgs filed to palace)" if archived else ""
         await interaction.followup.send(f"✨ Fresh start. Blank slate.{suffix}")
 
-    @bot.tree.command(name="status", description="Show harness status, model info, and last API token usage")
+    @bot.tree.command(name="status", description="Context utilization, cache efficiency, cost, channels, scheduler")
     async def slash_status(interaction: discord.Interaction):
         if interaction.user.id != AUTHORIZED_USER_ID:
             await interaction.response.send_message("I do not know you, stranger. 🛡️", ephemeral=True)
             return
-
-        channels = len(agent.conversations)
-        total_msgs = sum(len(m) for m in agent.conversations.values())
-
-        usage_info = ""
-        if agent.last_usage:
-            u = agent.last_usage
-            usage_info = (
-                f"\n**Last call tokens:** "
-                f"input={u['input']} cache_read={u['cache_read']} "
-                f"cache_write={u['cache_write']} output={u['output']}"
-            )
-
-        sched_info = ""
-        if scheduler:
-            s = scheduler.get_status()
-            hb = "🟢 ON" if s["heartbeat_enabled"] else "🔴 OFF"
-            sched_info = (
-                f"\n**Heartbeat:** {hb} (every {s['heartbeat_interval']}m)\n"
-                f"**Morning:** {s['morning_time']}\n"
-                f"**Goodnight:** {s['goodnight_time']}\n"
-                f"**CET Time:** {s['server_time_cet']}\n"
-                f"**Workday:** {'Yes' if s['is_workday'] else 'No'}"
-            )
-
-        await interaction.response.send_message(
-            f"🧝‍♀️ **Galadriel Harness Status**\n"
-            f"Model: `{agent.model}`\n"
-            f"Active channels: {channels}\n"
-            f"Messages in memory: {total_msgs}"
-            f"{usage_info}"
-            f"{sched_info}"
-        )
+        await interaction.response.send_message(_format_status_report(agent, scheduler))
 
     @bot.tree.command(name="compact", description="Compress conversation history using Haiku (reduces token usage)")
     async def slash_compact(interaction: discord.Interaction):
