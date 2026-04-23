@@ -22,6 +22,7 @@ actually engaging. You want cache_read to climb on the second API call within
 a turn and stay high afterward.
 """
 
+import asyncio
 import os
 import json
 import logging
@@ -236,6 +237,17 @@ class GaladrielAgent:
         self.context_warning_callback = None  # async (channel_id, message) -> None
         self._last_warn_tier: dict[str, str] = {}  # channel_id -> "attention"|"urgent"
 
+        # Output-ceiling streak tracking. Two consecutive responses within
+        # 100 tokens of max_tokens usually precede a max_tokens cascade —
+        # catch that before the cascade starts.
+        self._output_ceiling_streak: dict[str, int] = {}  # channel_id -> count
+
+        # Post-recovery advisory. When _trim_history / _hard_reset drop
+        # content during max_tokens recovery, set an advisory per channel
+        # so the model knows to use palace_search if the user references
+        # earlier exchange. Cleared when the channel is fully reset.
+        self._post_recovery_archive_tag: dict[str, str] = {}  # channel_id -> archive tag
+
         # Precompute tools-with-cache once. Tools never change at runtime,
         # so this object can be reused across every API call.
         self.tools = _build_cached_tools()
@@ -386,6 +398,51 @@ class GaladrielAgent:
         except Exception as e:
             log.warning(f"Context warning callback failed: {e}")
 
+    async def _maybe_warn_output_ceiling(self, response, channel_id: str):
+        """Warn when output_tokens repeatedly comes within 100 of max_tokens.
+
+        Two consecutive near-ceiling outputs is the usual precursor to the
+        max_tokens recovery cascade (trim → trim → hard_reset). Firing the
+        warning gives the user a chance to /compact or steer toward brevity
+        BEFORE the cascade starts eating conversation history. Silent no-op
+        if no callback is wired up.
+        """
+        if not self.context_warning_callback or self.max_tokens <= 0:
+            return
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        out = getattr(usage, "output_tokens", 0) or 0
+        if out == 0:
+            return
+
+        near_ceiling = out >= (self.max_tokens - 100)
+        streak = self._output_ceiling_streak.get(channel_id, 0)
+
+        if not near_ceiling:
+            # Any response comfortably below the ceiling resets the streak
+            self._output_ceiling_streak.pop(channel_id, None)
+            return
+
+        streak += 1
+        self._output_ceiling_streak[channel_id] = streak
+
+        # Fire the nudge exactly once per streak, at 2.
+        if streak == 2:
+            msg = (
+                f"⚠️ **Output-ceiling streak.** Two responses in a row hit near "
+                f"the `max_tokens` ceiling ({out}/{self.max_tokens}). "
+                f"A third near-ceiling response will start the recovery cascade "
+                f"(trim → trim → hard reset), which archives to the palace but "
+                f"breaks conversational flow. Consider `/compact` now, or steer "
+                f"the agent toward more concise responses."
+            )
+            try:
+                await self.context_warning_callback(channel_id, msg)
+                log.info(f"Output-ceiling warning fired for channel {channel_id} (streak={streak}, out={out})")
+            except Exception as e:
+                log.warning(f"Output-ceiling warning callback failed: {e}")
+
     def _log_usage(self, response):
         """Log token usage fields so caching behavior is observable.
 
@@ -414,6 +471,26 @@ class GaladrielAgent:
 
         # System is a list of blocks with cache_control on [0]. See memory.py.
         system_blocks = self.memory.build_system_blocks()
+
+        # Post-recovery advisory. If an earlier turn in this channel triggered
+        # the max_tokens recovery cascade, inject a non-cached note telling
+        # the model that the prior conversation was archived to the palace
+        # under a known tag — so if the user references missing history, it
+        # can recall via palace_search. Cleared on clear_history().
+        recovery_tag = self._post_recovery_archive_tag.get(channel_id)
+        if recovery_tag:
+            system_blocks.append({
+                "type": "text",
+                "text": (
+                    f"[SYSTEM:POST-RECOVERY-ADVISORY] An earlier max_tokens "
+                    f"cascade in this channel trimmed/reset the conversation. "
+                    f"The pre-incident exchange was archived to the palace. "
+                    f"If the user references earlier content you cannot see, "
+                    f"recall it with `palace_search` — the archive is filed "
+                    f"under channel tag `{recovery_tag}`."
+                ),
+            })
+
         max_tokens_retries = 0  # Track consecutive max_tokens hits
 
         while True:
@@ -437,6 +514,7 @@ class GaladrielAgent:
 
             self._log_usage(response)
             await self._maybe_warn_context(response, channel_id)
+            await self._maybe_warn_output_ceiling(response, channel_id)
 
             # Extract tool IDs from response BEFORE serialization
             tool_ids_from_response = set()
@@ -475,6 +553,34 @@ class GaladrielAgent:
                 # Remove the incomplete assistant message
                 del messages[-1]
 
+                # Archive-before-trim: the max_tokens recovery cascade (trim x2,
+                # then hard_reset) silently drops messages from the conversation.
+                # Snapshot the full current state to the palace on the FIRST
+                # retry only — one archive per cascade covers both subsequent
+                # trims and a potential hard reset. Fire-and-forget so recovery
+                # is not blocked by the mine. Silently no-op if mempalace is
+                # not installed.
+                if max_tokens_retries == 1 and messages:
+                    archive_tag = f"max_tokens_{channel_id}"
+                    try:
+                        from . import palace
+                        snapshot = list(messages)  # defensive copy
+                        asyncio.create_task(
+                            palace.archive_conversation(archive_tag, snapshot)
+                        )
+                        log.info(
+                            f"max_tokens recovery: queued palace archive of "
+                            f"{len(snapshot)} messages (channel={channel_id}, tag={archive_tag})"
+                        )
+                        # Record a post-recovery advisory so subsequent turns
+                        # know the archive tag to recall from. Cleared on
+                        # clear_history() / pop_and_archive_history().
+                        self._post_recovery_archive_tag[channel_id] = archive_tag
+                    except Exception as e:
+                        log.warning(
+                            f"max_tokens recovery: palace archive queue failed: {e}"
+                        )
+
                 # Extract any text from the truncated response to return
                 # if we're about to give up.
                 truncated_text_parts = [
@@ -495,11 +601,16 @@ class GaladrielAgent:
                     self._hard_reset(messages, user_message)
                     suffix = (
                         "\n\n*(My response was too long and I could not recover after multiple attempts. "
-                        "The conversation has been reset. Please repeat your request — I'll be more concise.)*"
+                        "The conversation has been reset — but your prior exchange was preserved "
+                        "in my memory palace. Ask me to recall it any time and I'll `palace_search` "
+                        "for the thread.)*"
                     )
                     if truncated_text:
                         return truncated_text + suffix
-                    return "(Response exceeded token limit repeatedly. Conversation reset. Please try again.)"
+                    return (
+                        "(Response exceeded token limit repeatedly. Conversation reset. "
+                        "Prior exchange preserved in my memory palace — ask and I'll recall it.)"
+                    )
 
                 # First two attempts: try progressively harder trimming.
                 count_before = len(messages)
@@ -579,6 +690,9 @@ class GaladrielAgent:
 
     def clear_history(self, channel_id: str = "default"):
         self.conversations.pop(channel_id, None)
+        # A fresh channel starts with no recovery advisory — clear stale state.
+        self._post_recovery_archive_tag.pop(channel_id, None)
+        self._output_ceiling_streak.pop(channel_id, None)
 
     async def pop_and_archive_history(self, channel_id: str = "default") -> int:
         """Archive the channel's conversation to the palace, then clear it.
@@ -593,6 +707,9 @@ class GaladrielAgent:
         cleared, just not archived.
         """
         messages = self.conversations.pop(channel_id, None)
+        # Clear per-channel transient state alongside the history.
+        self._post_recovery_archive_tag.pop(channel_id, None)
+        self._output_ceiling_streak.pop(channel_id, None)
         if not messages:
             return 0
         try:
