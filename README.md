@@ -2,6 +2,8 @@
 
 A persistent, tool-wielding Claude agent with Discord and web UI interfaces. Built to be genuinely cheap to run — not as an afterthought, but as a core design constraint baked into every layer of the architecture.
 
+![Galadriel](assets/galadriel_promo.png)
+
 ---
 
 ## 🟢 SIGNIFICANT CHANGE — 1.12: Persistent verbatim memory, at zero API cost
