@@ -6,6 +6,8 @@ A persistent, tool-wielding Claude agent with Discord and web UI interfaces. Bui
 
 ---
 
+> **1.14** — ships a ready-to-run **Dockerfile** + `docker-compose.yml`. `cp .env.example .env && docker compose up -d --build` and you have a warden. See [Run with Docker](#run-with-docker).
+
 ## 🟢 SIGNIFICANT CHANGE — 1.12: Persistent verbatim memory, at zero API cost
 
 Galadriel just grew a memory palace. Not a vector-DB-as-a-service. Not a paid tier. A local, embedded, verbatim store of everything she has ever written — searchable by meaning, not just keywords — with **zero Anthropic tokens spent on retrieval**.
@@ -208,6 +210,53 @@ python main.py
 **Full mode:** Set both `ANTHROPIC_API_KEY` and `DISCORD_BOT_TOKEN`.
 
 **Skipping step 4?** That's fine — the harness runs normally and palace tools just return `[palace unavailable]` until you seed. You can do it any time.
+
+---
+
+## Run with Docker
+
+The fastest path to a running warden — no local Python, no venv. A two-stage
+image bundles everything (including the ChromaDB/onnxruntime stack the memory
+palace needs).
+
+```bash
+git clone https://github.com/avasol/galadriel-public.git
+cd galadriel-public
+cp .env.example .env          # set ANTHROPIC_API_KEY at minimum
+docker compose up -d --build
+docker compose logs -f
+```
+
+**First boot — seed the palace once** (otherwise `palace_*` tools report
+`[palace unavailable]` until there's something to search):
+
+```bash
+docker compose exec galadriel mempalace init
+docker compose exec galadriel mempalace mine .   # optional: index the repo
+```
+
+### What persists
+
+State lives on volumes, not inside the image, so `docker compose down` won't
+forget anything:
+
+| Mount | Holds |
+|---|---|
+| `palace` (named volume → `/data`) | The memory palace + conversation archive (`~/.mempalace`) |
+| `./memory` | Daily memory logs (markdown — also visible on your host) |
+| `./config` | `scheduler_state.json`, `ambient_state.json`, `active_vision.txt` |
+
+### Notes
+
+- **The Tower UI has no authentication.** The compose file binds it to
+  `127.0.0.1:8080` deliberately. Do **not** expose it on `0.0.0.0` on a public
+  host without an authenticated reverse proxy or SSH tunnel in front.
+- **Image size is ~1.3 GB** — onnxruntime (a transitive dependency of the
+  memory palace) is the bulk. That's the cost of zero-API-cost semantic recall.
+- **Multi-arch:** `python:3.12-slim` is published for amd64 and arm64, so a
+  plain `docker build` works on both. For a registry image covering both:
+  `docker buildx build --platform linux/amd64,linux/arm64 -t <repo> --push .`
+- **Tower-only mode:** omit `DISCORD_BOT_TOKEN` in `.env` to run just the web UI.
 
 ---
 

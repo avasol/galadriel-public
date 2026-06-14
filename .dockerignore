@@ -1,0 +1,38 @@
+# Keep secrets, local state, and bloat out of the build context / image.
+.git
+.gitignore
+
+# Secrets — never bake into an image
+.env
+keys/
+*.pem
+*.key
+
+# Local state (lives on volumes at runtime, not in the image)
+memory/*.md
+memory/*.json
+!memory/.gitkeep
+config/scheduler_state.json
+config/ambient_state.json
+
+# Logs & debug dumps
+*.log
+log.txt
+debug/prompts/
+
+# Python cruft
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# Docs / media that don't belong in the runtime image
+img/
+ext_images_provided/
+*.md
+!README.md
