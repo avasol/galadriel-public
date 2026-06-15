@@ -619,6 +619,39 @@ See `.env.example` for the full list with inline documentation.
 
 ## Release Notes
 
+### 1.16 — Forgetting is a feature: stateless `--no-palace` sessions
+
+Driven by the [r/ClaudeAI launch thread](https://www.reddit.com/r/ClaudeAI/comments/1u5jfl3/),
+where the sharpest, most-repeated critique was that **verbatim memory is not the
+same as *usable* memory** — an agent needs to know whether a memory is active or
+stale, where it came from, and it needs to be able to *forget on purpose*. Three
+asks: lifecycle, provenance, and forgetting-as-a-feature. The knowledge-graph
+layer already had the first two (`valid_from`/`valid_to`, `confidence`, a full
+source chain). The third — deliberate, controlled forgetting — is what this
+release brings to the public harness, days after 1.14, because the thread asked
+for it and the answer was small and honest enough to ship at once.
+
+A `--no-palace` flag (or `GALADRIEL_NO_PALACE=1`) runs an **amnesiac session**.
+The harness doesn't merely *discourage* recall — it **withholds all ten
+memory-palace tools** from the advertised tool set (14 → 4), so the agent isn't
+offered the means to remember across sessions. A stray palace call, if one slips
+through, returns a clear stateless message rather than touching disk. Everything
+else runs normally: shell, file read/write, the daily log, Discord, the Tower.
+Only cross-session memory is suppressed.
+
+This matters most for **coding**, where you want full command over what the
+agent knows and no untracked context leaking in from yesterday. It's the third
+axis of the memory design, stated plainly in the README's new *"Forgetting is a
+feature"* section: a fact can expire in the knowledge graph, a drawer can be
+superseded or retired, and now a whole session can be made to forget on purpose.
+**Forgetting is a state you control, never silent data loss.**
+
+Changes are additive and back-compatible: `main.py` reads the flag,
+`harness/tools.py` gains `palace_disabled()` + `visible_tool_definitions()` and
+a guard in `execute_tool`, and `harness/agent.py` builds its cached tool set
+from the filtered list. Default behaviour is unchanged — memory is on unless you
+ask for it off.
+
 ### 1.15 — README: the thesis, front and centre
 
 A documentation release. The README now leads with what the project is actually
