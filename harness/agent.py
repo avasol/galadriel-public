@@ -276,7 +276,13 @@ class GaladrielAgent:
             self.conversations[channel_id] = []
         return self.conversations[channel_id]
 
-    def _trim_history(self, messages: list, max_messages: int = 100):
+    def _trim_history(
+        self,
+        messages: list,
+        max_messages: int = 100,
+        channel_id: str | None = None,
+        archive_before_trim: bool = False,
+    ):
         """Trim conversation history, preserving tool_use/tool_result pairs.
 
         Default raised to 100 (from 30). With prompt caching, long histories
@@ -288,6 +294,14 @@ class GaladrielAgent:
         matching user tool_result block. Naive slicing can orphan one half.
         We trim from the front, but if the new start lands inside a
         tool_use→tool_result pair, we walk forward to a safe boundary.
+
+        archive_before_trim: when True (the routine per-turn call), the slice
+        about to be dropped is first archived to the palace fire-and-forget,
+        and a post-recovery advisory is set so a future turn knows to recall
+        it via palace_search. This brings the routine path to parity with the
+        /new and max_tokens recovery paths, which already archive before they
+        drop. The max_tokens cascade passes False because it has *already*
+        archived the whole conversation upstream (one archive per cascade).
 
         SAFETY: Never trims to fewer than 1 message.
         """
@@ -320,6 +334,8 @@ class GaladrielAgent:
 
         if safe_cut is not None and safe_cut < len(messages):
             if safe_cut > 0:
+                if archive_before_trim:
+                    self._archive_trim_slice(messages[:safe_cut], channel_id)
                 del messages[:safe_cut]
                 log.info(f"Trimmed conversation to {len(messages)} messages (cut {safe_cut} from front)")
             return
@@ -337,6 +353,8 @@ class GaladrielAgent:
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
             if msg.get("role") == "user" and not _contains_tool_result(msg):
+                if archive_before_trim and i > 0:
+                    self._archive_trim_slice(messages[:i], channel_id)
                 del messages[:i]
                 log.info(f"Fallback trim: kept from last plain user msg, now {len(messages)} messages")
                 return
@@ -347,6 +365,30 @@ class GaladrielAgent:
         messages.clear()
         messages.append(last)
         log.warning(f"Fallback trim: no plain user messages found, kept only last message")
+
+    def _archive_trim_slice(self, dropped: list, channel_id: str | None) -> None:
+        """Archive the slice of messages about to be dropped by routine trim.
+
+        Mirrors the max_tokens recovery path: fire-and-forget palace archive
+        of the dropped slice, plus a post-recovery advisory so a later turn
+        knows the lost exchange is recallable via palace_search. Never raises
+        — archiving must not break trimming.
+        """
+        if not dropped:
+            return
+        try:
+            from . import palace
+            tag = f"trim_{channel_id or 'default'}"
+            snapshot = list(dropped)  # defensive copy before del
+            asyncio.create_task(palace.archive_conversation(tag, snapshot))
+            if channel_id is not None:
+                self._post_recovery_archive_tag[channel_id] = tag
+            log.info(
+                f"Routine trim: queued palace archive of {len(snapshot)} "
+                f"dropped message(s) (channel={channel_id}, tag={tag})"
+            )
+        except Exception as e:
+            log.warning(f"Routine trim: palace archive queue failed: {e}")
 
     def _hard_reset(self, messages: list, user_message: str | list):
         """Nuclear option: clear conversation and start fresh with the user message.
@@ -473,7 +515,7 @@ class GaladrielAgent:
     async def respond(self, user_message: str | list, channel_id: str = "default") -> str:
         messages = self._get_messages(channel_id)
         messages.append({"role": "user", "content": user_message})
-        self._trim_history(messages)
+        self._trim_history(messages, channel_id=channel_id, archive_before_trim=True)
 
         # System is a list of blocks with cache_control on [0]. See memory.py.
         system_blocks = self.memory.build_system_blocks()
