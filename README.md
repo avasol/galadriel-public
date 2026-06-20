@@ -619,6 +619,14 @@ See `.env.example` for the full list with inline documentation.
 
 ## Release Notes
 
+### 1.17 — Archive-before-trim: no silent context loss on routine trimming
+
+Driven by a careful code review from **[Shravan Chaudhary](https://www.linkedin.com/in/shravan-chaudhary/)** (Co-Founder, [Clodexa](https://clodexa.com)), who spotted that `GaladrielAgent._trim_history` — the routine per-turn trim that fires once a conversation crosses 100 messages — dropped the oldest slice **in place, with no archive**, while every other path that drops history (`/new`, the `max_tokens` recovery cascade, and tool-result compaction) archives verbatim to the memory palace *before* dropping.
+
+That asymmetry is now closed. The routine trim archives the slice it's about to drop (fire-and-forget `palace.archive_conversation`) and sets a post-recovery advisory, so a later turn can recall the lost exchange via `palace_search`. Nothing leaves working memory without a breadcrumb. The `max_tokens` calls keep the previous behaviour — they already archive the whole conversation once per cascade upstream, so no double-archive.
+
+One deliberate non-change: the **100-message trim cadence stays**. Message-count is a fine trigger; lowering it (or switching to an eager token-based trigger) would thrash the prompt cache, which is exactly why the threshold was raised from 30 to 100 in the first place. Token-awareness belongs in the *compaction* policy, not in a more aggressive trim trigger — a separate, larger piece of work. Thanks to Shravan for the sharp, well-reasoned report.
+
 ### 1.16 — Forgetting is a feature: stateless `--no-palace` sessions
 
 Driven by the [r/ClaudeAI launch thread](https://www.reddit.com/r/ClaudeAI/comments/1u5jfl3/),
@@ -756,6 +764,14 @@ All credit for the underlying memory system goes to the [MemPalace](https://gith
 **Humanized API errors.** Instead of dumping raw exception repr to Discord (`Error code: 400 — {'type': 'error', ...}`), common Anthropic API exceptions are now mapped to short, readable explanations: timeouts, rate limits, auth failures, overloaded 529s, bad-request details, model-not-found hints. Unknown errors still fall through unchanged. Server logs continue to capture the full traceback for forensics.
 
 ---
+
+## Acknowledgments
+
+The agent learns in the open, and so does the code. Community contributions that have shaped this harness:
+
+- **[Shravan Chaudhary](https://www.linkedin.com/in/shravan-chaudhary/)** (Co-Founder, [Clodexa](https://clodexa.com)) — identified that routine history-trimming dropped context without archiving it to the palace first, unlike every other trim path. Fixed in 1.17.
+
+The memory engine is **[MemPalace](https://github.com/MemPalace/mempalace)** — all credit for the storage layer, embedding pipeline, knowledge graph, and AAAK compression dialect belongs to its authors. This harness is a consumer.
 
 ## License
 
