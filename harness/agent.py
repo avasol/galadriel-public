@@ -28,7 +28,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from anthropic import AsyncAnthropic
+from .providers import make_provider
 from .memory import MemoryManager
 from .tools import TOOL_DEFINITIONS, execute_tool
 from .safety import classify_command, format_safety_notice
@@ -229,7 +229,13 @@ class GaladrielAgent:
         approval_callback=None,
         debug_dir: str = "debug",
     ):
-        self.client = AsyncAnthropic(api_key=api_key or os.environ["ANTHROPIC_API_KEY"])
+        # The provider seam: separate the mind from the brain power.
+        # Defaults to Anthropic (AGENT_PROVIDER=anthropic) — byte-identical
+        # to the original direct client, so caching/cost are unchanged.
+        self.provider = make_provider(
+            anthropic_client=None,
+            api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),
+        )
         self.model = model or os.environ.get("AGENT_MODEL", "claude-opus-4-8")
         self.max_tokens = max_tokens or int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
         self.memory = MemoryManager(config_dir=config_dir, memory_dir=memory_dir)
@@ -552,7 +558,7 @@ class GaladrielAgent:
             # This advances the messages-cache breakpoint as the conversation
             # grows, giving hits within tool_use cascades.
             messages_for_api = _attach_trailing_cache_control(messages)
-            response = await self.client.messages.create(
+            response = await self.provider.complete(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 system=system_blocks,
