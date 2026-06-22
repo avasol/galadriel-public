@@ -123,12 +123,125 @@ class AedelgardProvider(_NotYetWired):
     name = "aedelgard"
 
 
+
+# ── Bedrock Nova — portability proof (an alternate brain, mind intact) ────────
+#
+# This is the "Done when" item of the seam: an alternate provider answering a
+# turn end-to-end with the agent's real memory + soul (the system blocks) intact.
+# Scope is deliberately the TEXT path — it proves the mind is portable across
+# brains. Tool-use translation to Nova's schema is a later brick (named, not
+# implied — Discipline #2). With tools present and no tool support here, Nova
+# simply answers in text; that is enough to prove portability.
+
+class _NovaBlock:
+    """Anthropic-SDK-shaped content block so downstream serialization
+    (_serialize_content via .model_dump) and text extraction keep working."""
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+    def model_dump(self, exclude_none=True):
+        return {"type": "text", "text": self.text}
+
+
+class _NovaUsage:
+    def __init__(self, in_tok, out_tok):
+        self.input_tokens = in_tok
+        self.output_tokens = out_tok
+        self.cache_read_input_tokens = 0
+        self.cache_creation_input_tokens = 0
+
+
+class _NovaResponse:
+    def __init__(self, text, in_tok, out_tok):
+        self.content = [_NovaBlock(text)]
+        self.stop_reason = "end_turn"
+        self.usage = _NovaUsage(in_tok, out_tok)
+
+
+def _anthropic_system_to_text(system):
+    """Flatten Anthropic system blocks (list of {type,text,...}) to one string.
+    This carries the SOUL + memory prefix verbatim into Nova — the mind, intact."""
+    if isinstance(system, str):
+        return system
+    parts = []
+    for b in system or []:
+        if isinstance(b, dict) and b.get("type") == "text":
+            parts.append(b.get("text", ""))
+    return "\n\n".join(parts)
+
+
+def _anthropic_messages_to_bedrock(messages):
+    """Map Anthropic messages -> Bedrock Converse messages, text-only. Tool_use /
+    tool_result blocks are flattened to readable text so a tool cascade history
+    still gives Nova context (full tool parity is a later brick)."""
+    out = []
+    for m in messages:
+        role = m["role"]
+        content = m["content"]
+        if isinstance(content, str):
+            text = content
+        else:
+            chunks = []
+            for blk in content:
+                if not isinstance(blk, dict):
+                    chunks.append(str(blk)); continue
+                t = blk.get("type")
+                if t == "text":
+                    chunks.append(blk.get("text", ""))
+                elif t == "tool_use":
+                    chunks.append(f"[called tool {blk.get('name')} with {blk.get('input')}]")
+                elif t == "tool_result":
+                    c = blk.get("content")
+                    chunks.append(f"[tool result: {c if isinstance(c,str) else c}]")
+            text = "\n".join(x for x in chunks if x)
+        if not text:
+            text = "(empty)"
+        out.append({"role": role, "content": [{"text": text}]})
+    return out
+
+
+class BedrockNovaProvider:
+    """Amazon Bedrock Nova via the Converse API. Cheapest brain in the account —
+    used to PROVE the mind is portable. Text path only (see notes above)."""
+
+    name = "bedrock-nova"
+
+    def __init__(self, model_id=None, region=None):
+        import boto3
+        self.model_id = model_id or os.environ.get(
+            "BEDROCK_MODEL_ID", "eu.amazon.nova-micro-v1:0")
+        self.region = region or os.environ.get("AWS_REGION", "eu-north-1")
+        self.client = boto3.client("bedrock-runtime", region_name=self.region)
+
+    async def complete(self, *, model, max_tokens, system, tools, messages):
+        import asyncio
+        sys_text = _anthropic_system_to_text(system)
+        bedrock_msgs = _anthropic_messages_to_bedrock(messages)
+        kwargs = dict(
+            modelId=self.model_id,
+            messages=bedrock_msgs,
+            inferenceConfig={"maxTokens": min(max_tokens, 4096), "temperature": 0.7},
+        )
+        if sys_text:
+            kwargs["system"] = [{"text": sys_text}]
+        # boto3 is sync; run it off the event loop.
+        resp = await asyncio.to_thread(self.client.converse, **kwargs)
+        text = resp["output"]["message"]["content"][0]["text"]
+        u = resp.get("usage", {})
+        return _NovaResponse(text, u.get("inputTokens", 0), u.get("outputTokens", 0))
+
+    def usage(self, raw) -> Usage:
+        u = raw.usage
+        return {"input": u.input_tokens, "cache_read": 0,
+                "cache_write": 0, "output": u.output_tokens}
+
 _REGISTRY = {
     "anthropic": AnthropicProvider,
     "gemini": GeminiProvider,
     "openai": OpenAIProvider,
     "local": LocalProvider,
     "aedelgard": AedelgardProvider,
+    "bedrock-nova": BedrockNovaProvider,
 }
 
 
