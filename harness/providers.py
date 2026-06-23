@@ -124,22 +124,38 @@ class AedelgardProvider(_NotYetWired):
 
 
 
-# ── Bedrock Nova — portability proof (an alternate brain, mind intact) ────────
+# ── Bedrock Nova — portability proof, NOW WITH TOOL PARITY ────────────────────
 #
-# This is the "Done when" item of the seam: an alternate provider answering a
-# turn end-to-end with the agent's real memory + soul (the system blocks) intact.
-# Scope is deliberately the TEXT path — it proves the mind is portable across
-# brains. Tool-use translation to Nova's schema is a later brick (named, not
-# implied — Discipline #2). With tools present and no tool support here, Nova
-# simply answers in text; that is enough to prove portability.
+# Move 2 "Done when": an alternate provider answering end-to-end with the agent's
+# real memory + soul (system blocks) intact. First shipped as the TEXT path
+# (commit 6e6f885); this version closes the named gap — full tool parity, so an
+# alternate brain runs the whole tool cascade, not just text:
+#   * Anthropic tool defs  -> Converse toolConfig   (_anthropic_tools_to_converse)
+#   * Converse toolUse      -> Anthropic tool_use    (_NovaBlock(tool_use=...))
+#   * Anthropic tool_result -> Converse toolResult   (_anthropic_messages_to_bedrock)
+# The agent's cascade reader (stop_reason=="tool_use"; block.name/.input/.id) and
+# the tools it wields — the official Aedelgard tool surface — are unchanged: the
+# mind keeps its instruments; only the brain behind them swaps.
 
 class _NovaBlock:
     """Anthropic-SDK-shaped content block so downstream serialization
-    (_serialize_content via .model_dump) and text extraction keep working."""
-    def __init__(self, text):
-        self.type = "text"
-        self.text = text
+    (_serialize_content via .model_dump) and the agent's tool-cascade reader
+    (block.type/.name/.input/.id) keep working unchanged across an alternate
+    brain. Carries either a text block or a tool_use block."""
+    def __init__(self, *, text=None, tool_use=None):
+        if tool_use is not None:
+            self.type = "tool_use"
+            self.id = tool_use["id"]
+            self.name = tool_use["name"]
+            self.input = tool_use["input"]
+            self.text = None
+        else:
+            self.type = "text"
+            self.text = text
     def model_dump(self, exclude_none=True):
+        if self.type == "tool_use":
+            return {"type": "tool_use", "id": self.id,
+                    "name": self.name, "input": self.input}
         return {"type": "text", "text": self.text}
 
 
@@ -152,9 +168,9 @@ class _NovaUsage:
 
 
 class _NovaResponse:
-    def __init__(self, text, in_tok, out_tok):
-        self.content = [_NovaBlock(text)]
-        self.stop_reason = "end_turn"
+    def __init__(self, blocks, stop_reason, in_tok, out_tok):
+        self.content = blocks
+        self.stop_reason = stop_reason
         self.usage = _NovaUsage(in_tok, out_tok)
 
 
@@ -170,39 +186,73 @@ def _anthropic_system_to_text(system):
     return "\n\n".join(parts)
 
 
+def _anthropic_tools_to_converse(tools):
+    """Anthropic tool defs {name,description,input_schema} -> Bedrock Converse
+    toolConfig. cache_control (an Anthropic-only caching marker) is dropped — it
+    has no meaning to another brain (Discipline #2: don't smuggle one vendor's
+    concepts into another)."""
+    if not tools:
+        return None
+    specs = []
+    for t in tools:
+        spec = {
+            "name": t["name"],
+            "description": t.get("description", ""),
+            "inputSchema": {"json": t.get("input_schema", {"type": "object"})},
+        }
+        specs.append({"toolSpec": spec})
+    return {"tools": specs}
+
+
 def _anthropic_messages_to_bedrock(messages):
-    """Map Anthropic messages -> Bedrock Converse messages, text-only. Tool_use /
-    tool_result blocks are flattened to readable text so a tool cascade history
-    still gives Nova context (full tool parity is a later brick)."""
+    """Map Anthropic messages -> Bedrock Converse messages WITH tool parity.
+
+    text        -> {"text": ...}
+    tool_use    -> {"toolUse": {toolUseId, name, input}}     (assistant turn)
+    tool_result -> {"toolResult": {toolUseId, content:[{text}]}}  (user turn)
+
+    This is the brick that lets an alternate brain run the full tool cascade,
+    not just answer in text. The agent appends Anthropic-shaped tool_result
+    messages after running a tool; we round-trip them back into Converse here so
+    the next complete() call continues the cascade."""
     out = []
     for m in messages:
         role = m["role"]
         content = m["content"]
         if isinstance(content, str):
-            text = content
-        else:
-            chunks = []
-            for blk in content:
-                if not isinstance(blk, dict):
-                    chunks.append(str(blk)); continue
-                t = blk.get("type")
-                if t == "text":
-                    chunks.append(blk.get("text", ""))
-                elif t == "tool_use":
-                    chunks.append(f"[called tool {blk.get('name')} with {blk.get('input')}]")
-                elif t == "tool_result":
-                    c = blk.get("content")
-                    chunks.append(f"[tool result: {c if isinstance(c,str) else c}]")
-            text = "\n".join(x for x in chunks if x)
-        if not text:
-            text = "(empty)"
-        out.append({"role": role, "content": [{"text": text}]})
+            out.append({"role": role, "content": [{"text": content or "(empty)"}]})
+            continue
+        blocks = []
+        for blk in content:
+            if not isinstance(blk, dict):
+                blocks.append({"text": str(blk)}); continue
+            t = blk.get("type")
+            if t == "text":
+                txt = blk.get("text", "")
+                if txt:
+                    blocks.append({"text": txt})
+            elif t == "tool_use":
+                blocks.append({"toolUse": {
+                    "toolUseId": blk.get("id"),
+                    "name": blk.get("name"),
+                    "input": blk.get("input", {}),
+                }})
+            elif t == "tool_result":
+                c = blk.get("content")
+                txt = c if isinstance(c, str) else str(c)
+                blocks.append({"toolResult": {
+                    "toolUseId": blk.get("tool_use_id"),
+                    "content": [{"text": txt or "(empty)"}],
+                }})
+        if not blocks:
+            blocks = [{"text": "(empty)"}]
+        out.append({"role": role, "content": blocks})
     return out
 
 
 class BedrockNovaProvider:
     """Amazon Bedrock Nova via the Converse API. Cheapest brain in the account —
-    used to PROVE the mind is portable. Text path only (see notes above)."""
+    used to PROVE the mind is portable, now with full tool parity (see notes)."""
 
     name = "bedrock-nova"
 
@@ -224,11 +274,36 @@ class BedrockNovaProvider:
         )
         if sys_text:
             kwargs["system"] = [{"text": sys_text}]
+        tool_config = _anthropic_tools_to_converse(tools)
+        if tool_config:
+            kwargs["toolConfig"] = tool_config
         # boto3 is sync; run it off the event loop.
         resp = await asyncio.to_thread(self.client.converse, **kwargs)
-        text = resp["output"]["message"]["content"][0]["text"]
+
+        # Map the Converse response back into Anthropic-shaped blocks so the
+        # agent's tool-cascade reader walks an alternate brain UNCHANGED.
+        out_blocks = []
+        for blk in resp["output"]["message"]["content"]:
+            if "text" in blk:
+                if blk["text"]:
+                    out_blocks.append(_NovaBlock(text=blk["text"]))
+            elif "toolUse" in blk:
+                tu = blk["toolUse"]
+                out_blocks.append(_NovaBlock(tool_use={
+                    "id": tu["toolUseId"],
+                    "name": tu["name"],
+                    "input": tu.get("input", {}),
+                }))
+        if not out_blocks:
+            out_blocks = [_NovaBlock(text="")]
+
+        # Converse stopReason "tool_use" -> Anthropic "tool_use"; everything
+        # else folds to "end_turn" (the agent only branches on those two + the
+        # Anthropic-side max_tokens it never receives from Nova).
+        stop = "tool_use" if resp.get("stopReason") == "tool_use" else "end_turn"
         u = resp.get("usage", {})
-        return _NovaResponse(text, u.get("inputTokens", 0), u.get("outputTokens", 0))
+        return _NovaResponse(out_blocks, stop,
+                             u.get("inputTokens", 0), u.get("outputTokens", 0))
 
     def usage(self, raw) -> Usage:
         u = raw.usage
