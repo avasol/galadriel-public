@@ -74,10 +74,12 @@
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
 
-    <Fragment>
-      <ComponentGroup Id="PayloadFiles" Directory="INSTALLFOLDER">
-        <Files Include="!(bindpath.PayloadDir)\**" />
-      </ComponentGroup>
-    </Fragment>
   </Package>
+
+  <!-- A Fragment is a sibling of Package in WiX v4, never a child. -->
+  <Fragment>
+    <ComponentGroup Id="PayloadFiles" Directory="INSTALLFOLDER">
+      <Files Include="!(bindpath.PayloadDir)\**" />
+    </ComponentGroup>
+  </Fragment>
 </Wix>
