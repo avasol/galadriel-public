@@ -41,10 +41,23 @@ def main():
         os.environ["GALADRIEL_NO_PALACE"] = "1"
         log.info("Stateless mode: --no-palace set; memory palace tools are DISABLED for this session.")
 
-    # Validate required env vars
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        log.error("ANTHROPIC_API_KEY not set. Copy .env.example to .env and fill it in.")
+    # Validate the credential the SELECTED brain needs — the two-path privacy
+    # switch made real. AGENT_PROVIDER decides whether the body talks to a model
+    # directly with your own key (operator-blind: we are not on the wire) or
+    # thinks via the Aedelgard broker relay with a device token (one key, no
+    # sk-ant-). An Aedelgard-key-only body must not be blocked for lacking an
+    # ANTHROPIC_API_KEY it deliberately does not carry.
+    from harness.providers import provider_requirements
+    provider = os.environ.get("AGENT_PROVIDER", "anthropic").lower()
+    needed, hint = provider_requirements(provider)
+    if needed and not any(os.environ.get(v) for v in needed):
+        names = " or ".join(needed)
+        log.error(
+            f"AGENT_PROVIDER={provider!r} needs {names}. {hint} "
+            f"Copy .env.example to .env and set it."
+        )
         sys.exit(1)
+    log.info(f"Brain: {provider} — {hint}")
 
     # Resolve config and memory paths relative to this file
     base_dir = os.path.dirname(os.path.abspath(__file__))

@@ -323,3 +323,44 @@ def test_aedelgard_provider_requires_config():
         os.environ.pop(k, None)
     with _pytest.raises(RuntimeError):
         AedelgardProvider()
+
+
+# ─── The two-path switch: provider-aware boot requirements ────────────────────
+#
+# The architecture page promises a binary switch: which key the body carries
+# decides whether we are on the wire. The body must therefore boot on the
+# credential the SELECTED brain needs — and must NOT demand an ANTHROPIC_API_KEY
+# from an Aedelgard-key-only or local-model body. These pin that contract.
+
+def test_provider_requirements_anthropic_needs_claude_key():
+    from harness.providers import provider_requirements
+    needed, hint = provider_requirements("anthropic")
+    assert "ANTHROPIC_API_KEY" in needed
+    assert "operator-blind" in hint
+
+
+def test_provider_requirements_aedelgard_needs_device_token_not_claude():
+    from harness.providers import provider_requirements
+    needed, _ = provider_requirements("aedelgard")
+    assert needed == ("AEDELGARD_DEVICE_TOKEN",)
+    assert "ANTHROPIC_API_KEY" not in needed  # one key, no sk-ant-
+
+
+def test_provider_requirements_local_needs_nothing():
+    from harness.providers import provider_requirements
+    needed, hint = provider_requirements("local")
+    assert needed == ()  # offline model, no cloud credential
+    assert "offline" in hint
+
+
+def test_provider_requirements_gemini_accepts_either_google_var():
+    from harness.providers import provider_requirements
+    needed, _ = provider_requirements("gemini")
+    assert "GEMINI_API_KEY" in needed and "GOOGLE_API_KEY" in needed
+
+
+def test_provider_requirements_reads_env_default(monkeypatch):
+    from harness.providers import provider_requirements
+    monkeypatch.setenv("AGENT_PROVIDER", "aedelgard")
+    needed, _ = provider_requirements()  # no arg -> read env
+    assert needed == ("AEDELGARD_DEVICE_TOKEN",)

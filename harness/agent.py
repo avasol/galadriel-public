@@ -231,7 +231,10 @@ class GaladrielAgent:
     ):
         # The provider seam: separate the mind from the brain power.
         # Defaults to Anthropic (AGENT_PROVIDER=anthropic) — byte-identical
-        # to the original direct client, so caching/cost are unchanged.
+        # to the original direct client, so caching/cost are unchanged. Any
+        # other AGENT_PROVIDER selects a different brain; the Anthropic key is
+        # only consulted for the Anthropic path (other providers self-read
+        # their own credentials from env in their __init__).
         self.provider = make_provider(
             anthropic_client=None,
             api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),

@@ -394,6 +394,43 @@ _REGISTRY = {
 }
 
 
+# ── Boot-time credential requirements per provider ───────────────────────────
+#
+# The two-path privacy switch made real: which credential the body needs depends
+# entirely on which brain it talks to. main.py uses this to gate boot honestly —
+# an Aedelgard-key-only body must NOT be blocked for lacking an ANTHROPIC_API_KEY
+# it deliberately does not have; a local-model body needs no cloud key at all.
+#
+# Returns (env_vars_any_of, human_hint). env_vars_any_of is a tuple — boot is OK
+# if ANY one is set. Empty tuple = no credential required (e.g. a local model).
+
+_PROVIDER_REQUIREMENTS = {
+    "anthropic":    (("ANTHROPIC_API_KEY",),
+                     "your own Claude key — you talk to the model directly; "
+                     "we are not on the wire (operator-blind by construction)."),
+    "aedelgard":    (("AEDELGARD_DEVICE_TOKEN",),
+                     "an Aedelgard device token (minted from your aedk) — the "
+                     "body thinks via the broker relay; one key, no sk-ant-."),
+    "gemini":       (("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+                     "your own Gemini key — direct to Google; we are not on the wire."),
+    "openai":       (("OPENAI_API_KEY",),
+                     "your own OpenAI key — direct to OpenAI; we are not on the wire."),
+    "bedrock-nova": ((),  # uses the host's AWS credentials/role
+                     "AWS credentials on the host (role or env)."),
+    "local":        ((),  # offline model, no cloud credential
+                     "nothing — a local model runs offline on your own machine."),
+}
+
+
+def provider_requirements(provider_name: str | None = None) -> tuple[tuple, str]:
+    """Return (env_vars_any_of, hint) for the selected provider. Used by main.py
+    to gate boot per the chosen brain, so the body is never blocked for lacking a
+    credential it intentionally does not carry."""
+    name = (provider_name or os.environ.get("AGENT_PROVIDER") or "anthropic").lower()
+    return _PROVIDER_REQUIREMENTS.get(name, (("ANTHROPIC_API_KEY",),
+        f"a credential for provider {name!r}."))
+
+
 def make_provider(provider_name: str | None = None, *,
                   anthropic_client=None, api_key: str | None = None) -> LLMProvider:
     """Select a provider. Defaults to 'anthropic' so the live hot path is
