@@ -11,8 +11,9 @@
     * per-machine install, upgrade-aware (same UpgradeCode across versions)
 
   The harvested file list (the hundreds of files PyInstaller emits, including the
-  bundled 167MB ONNX embedding model) is generated at build time by `heat` into
-  Files.wxs — we do NOT hand-list them here. See build_msi.ps1.
+  bundled 167MB ONNX embedding model) is generated at build time by the WiX v4
+  <Files> auto-harvest element - we do NOT hand-list them. PayloadDir is supplied
+  as a bind path (-b PayloadDir=...) by build_msi.ps1.
 
   Version is injected at build time via the ProductVersion preprocessor var.
 -->
@@ -66,20 +67,14 @@
     </StandardDirectory>
 
     <!-- The big payload: every PyInstaller file (incl. the bundled 167MB ONNX
-         embedding model). WiX v4 harvests a whole directory at build time via the
-         Files element - no standalone heat tool needed. PayloadDir is supplied as
-         a bind path (-b PayloadDir=...) by build_msi.ps1. -->
+         embedding model). WiX v4's <Files> element harvests a whole directory at
+         build time and emits its own components automatically. It is a valid
+         direct child of <Feature> (NOT of <ComponentGroup> - that was WIX0005).
+         PayloadDir is supplied as a bind path (-b PayloadDir=...) by build_msi.ps1. -->
     <Feature Id="Main" Title="Aedelgard Body" Level="1">
-      <ComponentGroupRef Id="PayloadFiles" />
+      <Files Include="!(bindpath.PayloadDir)\**" Directory="INSTALLFOLDER" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
 
   </Package>
-
-  <!-- A Fragment is a sibling of Package in WiX v4, never a child. -->
-  <Fragment>
-    <ComponentGroup Id="PayloadFiles" Directory="INSTALLFOLDER">
-      <Files Include="!(bindpath.PayloadDir)\**" />
-    </ComponentGroup>
-  </Fragment>
 </Wix>
