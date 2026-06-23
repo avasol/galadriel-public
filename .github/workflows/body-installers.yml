@@ -1,0 +1,103 @@
+name: Body installers (Tier 1)
+
+# Builds the native, offline-first Aedelgard body for each OS. PyInstaller
+# cannot cross-compile, so each artifact is built on its own runner. The Python
+# spec (packaging/common/aedelgard_body.spec) is identical across all three;
+# only the outer wrapper (AppImage / .dmg / .msi) differs.
+#
+# Triggered manually or on a version tag. Artifacts are uploaded per-run; a
+# tagged build also attaches them to the GitHub Release.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # needed to attach artifacts to a Release on tag builds
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: Aedelgard-Body-x86_64.AppImage
+          - os: macos-latest
+            artifact: Aedelgard-Body.dmg
+          - os: windows-latest
+            artifact: Aedelgard-Body-Setup.msi
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # The 167MB ONNX embedding model is fetched once per build so the bundle
+      # is offline-first. (Vendoring it in-repo would bloat git; CI seeds it.)
+      - name: Fetch embedding model (all-MiniLM-L6-v2)
+        shell: bash
+        run: python packaging/common/fetch_model.py
+
+      # ── Linux: AppImage ──────────────────────────────────────────────
+      - name: Build AppImage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfuse2 file wget
+          bash packaging/linux/build_appimage.sh
+
+      # ── macOS: PyInstaller .app -> .dmg ──────────────────────────────
+      - name: Build dmg (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller packaging/common/aedelgard_body.spec --noconfirm
+          # Wrap the onedir into a simple .dmg (no code-signing in CI yet).
+          mkdir -p dist/dmgroot
+          cp -R "dist/aedelgard-body" "dist/dmgroot/Aedelgard Body"
+          hdiutil create -volname "Aedelgard Body" -srcfolder dist/dmgroot \
+            -ov -format UDZO "dist/Aedelgard-Body.dmg"
+
+      # ── Windows: PyInstaller -> .msi via WiX (or zip fallback) ───────
+      - name: Build msi (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          pyinstaller packaging/common/aedelgard_body.spec --noconfirm
+          # Minimal: ship a versioned zip if WiX is not configured. The .msi
+          # authoring (packaging/windows/aedelgard.wxs) is the polish pass.
+          if [ -f packaging/windows/build_msi.ps1 ]; then
+            powershell -ExecutionPolicy Bypass -File packaging/windows/build_msi.ps1
+          else
+            cd dist && 7z a "Aedelgard-Body-Setup.zip" "aedelgard-body" && cd ..
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/*.AppImage
+            dist/*.dmg
+            dist/*.msi
+            dist/*.zip
+          if-no-files-found: warn
+
+      - name: Attach to Release (tagged builds)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.AppImage
+            dist/*.dmg
+            dist/*.msi
+            dist/*.zip

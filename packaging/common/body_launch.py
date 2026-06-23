@@ -87,8 +87,10 @@ def prepare_environment() -> Path:
     res_root = resource_root()
 
     os.environ["GALADRIEL_BODY"] = "1"
-    # Keep the agent bound to localhost only — no auth on the Tower UI.
-    os.environ.setdefault("TOWER_HOST", "127.0.0.1")
+    # FORCE localhost binding — the Tower UI has no auth and must never be
+    # reachable from the LAN on a user's personal machine. Not setdefault:
+    # the body owns this decision regardless of a stale .env value.
+    os.environ["TOWER_HOST"] = "127.0.0.1"
     os.environ.setdefault("TOWER_PORT", "8080")
     # The body's mind lives in the user data dir, not next to the binary.
     os.environ.setdefault("GALADRIEL_CONFIG_DIR", str(data_dir / "config"))
