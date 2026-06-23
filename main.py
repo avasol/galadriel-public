@@ -11,7 +11,9 @@ import asyncio
 import threading
 from dotenv import load_dotenv
 
-load_dotenv()
+# The native body writes its .env into a per-OS user data dir and points
+# GALADRIEL_DOTENV at it; source/Docker runs leave it unset and load ./.env.
+load_dotenv(os.environ.get("GALADRIEL_DOTENV") or None)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,10 +61,12 @@ def main():
         sys.exit(1)
     log.info(f"Brain: {provider} — {hint}")
 
-    # Resolve config and memory paths relative to this file
+    # Resolve config and memory paths. The native body relocates the mind
+    # to a writable per-OS user data dir via these env vars; source/Docker
+    # runs leave them unset and use the repo-relative defaults.
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    config_dir = os.path.join(base_dir, "config")
-    memory_dir = os.path.join(base_dir, "memory")
+    config_dir = os.environ.get("GALADRIEL_CONFIG_DIR") or os.path.join(base_dir, "config")
+    memory_dir = os.environ.get("GALADRIEL_MEMORY_DIR") or os.path.join(base_dir, "memory")
 
     from harness.agent import GaladrielAgent
     from harness.scheduler import Scheduler

@@ -206,4 +206,68 @@ def create_tower(agent, scheduler=None) -> Flask:
             scheduler.arm_wake(prompt)
         return jsonify(scheduler.get_status())
 
+
+    # ── First-run setup (native body) ────────────────────────────
+    # Shown when the body boots with no usable brain credential. Captures the
+    # ONE key (Aedelgard device token) OR a BYO provider key, writes the .env
+    # into the per-OS user data dir, and hands the user to the chat.
+
+    def _dotenv_path():
+        import os
+        return os.environ.get("GALADRIEL_DOTENV") or str(Path(__file__).resolve().parents[1] / ".env")
+
+    @app.route("/setup")
+    def setup_page():
+        return render_template("setup.html")
+
+    @app.route("/api/setup", methods=["POST"])
+    def api_setup():
+        """Write the brain credential to the body's .env. Body JSON:
+          {"provider": "anthropic"|"gemini"|"aedelgard", ...key fields}
+        """
+        import os
+        data = request.json or {}
+        provider = (data.get("provider") or "").strip().lower()
+
+        lines = [
+            "# Written by the Aedelgard body first-run setup.",
+            f"AGENT_PROVIDER={provider}",
+            "TOWER_HOST=127.0.0.1",
+            "TOWER_PORT=8080",
+        ]
+
+        if provider == "anthropic":
+            key = (data.get("anthropic_api_key") or "").strip()
+            if not key.startswith("sk-"):
+                return jsonify({"error": "Enter a valid Anthropic key (starts with sk-)."}), 400
+            lines.append(f"ANTHROPIC_API_KEY={key}")
+        elif provider == "gemini":
+            key = (data.get("gemini_api_key") or "").strip()
+            if not key:
+                return jsonify({"error": "Enter your Google Gemini API key."}), 400
+            lines.append(f"GEMINI_API_KEY={key}")
+            lines.append("GEMINI_MODEL=" + (data.get("gemini_model") or "gemini-2.5-flash").strip())
+        elif provider == "aedelgard":
+            token = (data.get("aedelgard_device_token") or "").strip()
+            fp = (data.get("aedelgard_device_fingerprint") or "").strip()
+            broker = (data.get("aedelgard_broker_url") or "https://hq.aedelgard.com").strip()
+            if not token:
+                return jsonify({"error": "Paste your Aedelgard device token."}), 400
+            lines.append(f"AEDELGARD_BROKER_URL={broker}")
+            lines.append(f"AEDELGARD_DEVICE_TOKEN={token}")
+            if fp:
+                lines.append(f"AEDELGARD_DEVICE_FINGERPRINT={fp}")
+        else:
+            return jsonify({"error": "Choose a brain: anthropic, gemini, or aedelgard."}), 400
+
+        try:
+            with open(_dotenv_path(), "w", encoding="utf-8") as fh:
+                fh.write("\n".join(lines) + "\n")
+        except Exception as e:
+            log.exception("setup write failed")
+            return jsonify({"error": f"Could not write config: {e}"}), 500
+
+        # The body must restart to pick up the new brain (env is read at boot).
+        return jsonify({"status": "ok", "restart_required": True})
+
     return app

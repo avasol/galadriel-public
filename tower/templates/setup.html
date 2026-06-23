@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aedelgard — Awaken your mind</title>
+  <style>
+    :root {
+      --bg: #0b0d12; --panel: #141823; --ink: #e8ecf4; --muted: #8b94a7;
+      --line: #232a39; --gold: #d8b46a; --gold-dim: #9c834b; --ok: #4ec9a0;
+      --err: #e0686a; --accent: #6f8fd6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; background:
+        radial-gradient(1200px 600px at 50% -10%, #1a2030 0%, var(--bg) 60%);
+      color: var(--ink); font: 16px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: flex; align-items: center; justify-content: center; padding: 2rem 1rem;
+    }
+    .card {
+      width: 100%; max-width: 540px; background: var(--panel);
+      border: 1px solid var(--line); border-radius: 16px; padding: 2.2rem;
+      box-shadow: 0 24px 60px rgba(0,0,0,.45);
+    }
+    h1 { margin: 0 0 .25rem; font-size: 1.5rem; font-weight: 650; letter-spacing: .2px; }
+    .sub { color: var(--muted); margin: 0 0 1.6rem; font-size: .95rem; }
+    .thesis { color: var(--gold); font-size: .82rem; letter-spacing: .12em;
+      text-transform: uppercase; margin: 0 0 1.4rem; }
+    label { display: block; font-size: .8rem; color: var(--muted); margin: 1rem 0 .35rem; }
+    select, input[type=text], input[type=password] {
+      width: 100%; padding: .7rem .8rem; background: #0e1119; color: var(--ink);
+      border: 1px solid var(--line); border-radius: 9px; font-size: .95rem; outline: none;
+    }
+    select:focus, input:focus { border-color: var(--accent); }
+    .hint { font-size: .78rem; color: var(--muted); margin: .4rem 0 0; }
+    .field { display: none; }
+    .field.on { display: block; }
+    button {
+      margin-top: 1.6rem; width: 100%; padding: .85rem; font-size: 1rem; font-weight: 600;
+      color: #1a1406; background: linear-gradient(180deg, var(--gold), var(--gold-dim));
+      border: none; border-radius: 10px; cursor: pointer;
+    }
+    button:disabled { opacity: .55; cursor: default; }
+    .msg { margin-top: 1.1rem; font-size: .9rem; min-height: 1.2em; }
+    .msg.err { color: var(--err); }
+    .msg.ok { color: var(--ok); }
+    a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <p class="thesis">The mind is yours · the brain is rented</p>
+    <h1>Awaken your mind</h1>
+    <p class="sub">One key opens the door. Choose the brain your body will think with —
+      the soul and the memory are the same on every path.</p>
+
+    <label for="provider">Brain</label>
+    <select id="provider" onchange="pick()">
+      <option value="aedelgard">Aedelgard key only — think through the broker (one key, no setup)</option>
+      <option value="anthropic">Bring your own Claude key (operator-blind — we are never on the wire)</option>
+      <option value="gemini">Bring your own Google Gemini key</option>
+    </select>
+
+    <!-- Aedelgard one-key path -->
+    <div class="field on" data-p="aedelgard">
+      <label>Aedelgard device token</label>
+      <input id="aedk_token" type="password" placeholder="paste your device token">
+      <label>Broker URL</label>
+      <input id="aedk_broker" type="text" value="https://hq.aedelgard.com">
+      <p class="hint">No <code>sk-</code> key lives on your machine. The body thinks via the
+        Aedelgard relay; your memory still seals to your own key, blind at rest.</p>
+    </div>
+
+    <!-- BYO Anthropic -->
+    <div class="field" data-p="anthropic">
+      <label>Anthropic API key</label>
+      <input id="anthropic_key" type="password" placeholder="sk-ant-...">
+      <p class="hint">Talks to Anthropic directly. We are not on the wire — operator-blind by construction.</p>
+    </div>
+
+    <!-- BYO Gemini -->
+    <div class="field" data-p="gemini">
+      <label>Google Gemini API key</label>
+      <input id="gemini_key" type="password" placeholder="your Gemini key">
+      <label>Model</label>
+      <input id="gemini_model" type="text" value="gemini-2.5-flash">
+    </div>
+
+    <button id="go" onclick="save()">Awaken</button>
+    <p id="msg" class="msg"></p>
+  </div>
+
+  <script>
+    function pick() {
+      const p = document.getElementById('provider').value;
+      document.querySelectorAll('.field').forEach(f =>
+        f.classList.toggle('on', f.dataset.p === p));
+    }
+    function setMsg(t, cls) {
+      const m = document.getElementById('msg');
+      m.textContent = t; m.className = 'msg ' + (cls || '');
+    }
+    async function save() {
+      const provider = document.getElementById('provider').value;
+      const body = { provider };
+      if (provider === 'aedelgard') {
+        body.aedelgard_device_token = document.getElementById('aedk_token').value;
+        body.aedelgard_broker_url = document.getElementById('aedk_broker').value;
+      } else if (provider === 'anthropic') {
+        body.anthropic_api_key = document.getElementById('anthropic_key').value;
+      } else if (provider === 'gemini') {
+        body.gemini_api_key = document.getElementById('gemini_key').value;
+        body.gemini_model = document.getElementById('gemini_model').value;
+      }
+      const btn = document.getElementById('go');
+      btn.disabled = true; setMsg('Sealing your choice…');
+      try {
+        const r = await fetch('/api/setup', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const j = await r.json();
+        if (!r.ok) { setMsg(j.error || 'Setup failed.', 'err'); btn.disabled = false; return; }
+        setMsg('Mind awakened. Restart the app to begin — your body will open straight to chat.', 'ok');
+      } catch (e) {
+        setMsg('Could not reach the body: ' + e, 'err'); btn.disabled = false;
+      }
+    }
+    pick();
+  </script>
+</body>
+</html>
