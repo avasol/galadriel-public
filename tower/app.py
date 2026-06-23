@@ -248,15 +248,16 @@ def create_tower(agent, scheduler=None) -> Flask:
             lines.append(f"GEMINI_API_KEY={key}")
             lines.append("GEMINI_MODEL=" + (data.get("gemini_model") or "gemini-2.5-flash").strip())
         elif provider == "aedelgard":
-            token = (data.get("aedelgard_device_token") or "").strip()
-            fp = (data.get("aedelgard_device_fingerprint") or "").strip()
-            broker = (data.get("aedelgard_broker_url") or "https://hq.aedelgard.com").strip()
-            if not token:
-                return jsonify({"error": "Paste your Aedelgard device token."}), 400
+            # ONE KEY: the user pastes their aedk (registration key). The
+            # AedelgardProvider mints + silently refreshes device tokens from it,
+            # so the body keeps thinking past the ~1h token TTL. No device-token
+            # paste, no expiry surprise — "paste your key once" made true.
+            aedk = (data.get("aedelgard_aedk") or data.get("aedelgard_key") or "").strip()
+            broker = (data.get("aedelgard_broker_url") or "https://api.aedelgard.com").strip()
+            if not aedk:
+                return jsonify({"error": "Paste your Aedelgard key (aedk…)."}), 400
             lines.append(f"AEDELGARD_BROKER_URL={broker}")
-            lines.append(f"AEDELGARD_DEVICE_TOKEN={token}")
-            if fp:
-                lines.append(f"AEDELGARD_DEVICE_FINGERPRINT={fp}")
+            lines.append(f"AEDELGARD_AEDK={aedk}")
         else:
             return jsonify({"error": "Choose a brain: anthropic, gemini, or aedelgard."}), 400
 

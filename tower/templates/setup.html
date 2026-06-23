@@ -63,10 +63,10 @@
 
     <!-- Aedelgard one-key path -->
     <div class="field on" data-p="aedelgard">
-      <label>Aedelgard device token</label>
-      <input id="aedk_token" type="password" placeholder="paste your device token">
+      <label>Aedelgard key</label>
+      <input id="aedk_token" type="password" placeholder="aedk…">
       <label>Broker URL</label>
-      <input id="aedk_broker" type="text" value="https://hq.aedelgard.com">
+      <input id="aedk_broker" type="text" value="https://api.aedelgard.com">
       <p class="hint">No <code>sk-</code> key lives on your machine. The body thinks via the
         Aedelgard relay; your memory still seals to your own key, blind at rest.</p>
     </div>
@@ -104,7 +104,7 @@
       const provider = document.getElementById('provider').value;
       const body = { provider };
       if (provider === 'aedelgard') {
-        body.aedelgard_device_token = document.getElementById('aedk_token').value;
+        body.aedelgard_aedk = document.getElementById('aedk_token').value;
         body.aedelgard_broker_url = document.getElementById('aedk_broker').value;
       } else if (provider === 'anthropic') {
         body.anthropic_api_key = document.getElementById('anthropic_key').value;

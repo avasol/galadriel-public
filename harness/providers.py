@@ -124,10 +124,22 @@ class AedelgardProvider:
     Message — so the agent's tool cascade (stop_reason/.type/.name/.input/.id)
     walks a relayed turn IDENTICALLY to a direct Anthropic turn.
 
-    Config (env):
-      AEDELGARD_BROKER_URL    — broker base, e.g. https://hq.aedelgard.com
-      AEDELGARD_DEVICE_TOKEN  — device token (from /v1/sessions, via the aedk)
-      AEDELGARD_DEVICE_FINGERPRINT — the fingerprint bound into that token
+    ── ONE KEY, the killer onboarding ──────────────────────────────────────
+    The aedk (the Aedelgard registration key) is the ONLY secret the user pastes.
+    A device token is short-lived (~1h TTL, fingerprint-bound) and must be minted
+    from the aedk via POST /v1/sessions and SILENTLY RE-MINTED when it expires.
+    This provider owns that whole lifecycle, so "paste your key once" is true,
+    not hollow: the body keeps thinking for as long as the aedk is valid.
+
+    Config (env), two ways:
+      Preferred (true one-key):
+        AEDELGARD_BROKER_URL  — broker base, e.g. https://api.aedelgard.com
+        AEDELGARD_AEDK        — the registration key (aedk…); provider self-mints
+        AEDELGARD_DEVICE_FINGERPRINT — optional; a stable per-install fingerprint
+                                       is derived + persisted if unset
+      Legacy/advanced (pre-minted token, no self-mint):
+        AEDELGARD_DEVICE_TOKEN  — a device token you minted yourself
+        AEDELGARD_DEVICE_FINGERPRINT — the fingerprint bound into that token
 
     Honest cost (named, not hidden): relaying puts Aedelgard in the in-flight
     inference path — the broker sees the prompt in transit while forwarding it.
@@ -139,25 +151,94 @@ class AedelgardProvider:
 
     def __init__(self, *, broker_url: str | None = None,
                  device_token: str | None = None,
-                 device_fingerprint: str | None = None):
+                 device_fingerprint: str | None = None,
+                 aedk: str | None = None):
         import httpx
         self.broker_url = (broker_url or os.environ.get("AEDELGARD_BROKER_URL", "")).rstrip("/")
+        self.aedk = aedk or os.environ.get("AEDELGARD_AEDK", "")
+        self.device_fingerprint = (
+            device_fingerprint
+            or os.environ.get("AEDELGARD_DEVICE_FINGERPRINT", "")
+            or self._stable_fingerprint()
+        )
+        # A pre-minted token (legacy/advanced) short-circuits self-minting.
         self.device_token = device_token or os.environ.get("AEDELGARD_DEVICE_TOKEN", "")
-        self.device_fingerprint = device_fingerprint or os.environ.get("AEDELGARD_DEVICE_FINGERPRINT", "")
-        if not self.broker_url or not self.device_token:
+        if not self.broker_url:
             raise RuntimeError(
-                "AedelgardProvider needs AEDELGARD_BROKER_URL and "
-                "AEDELGARD_DEVICE_TOKEN (mint a device token from your aedk via "
-                "/v1/sessions). Or set AGENT_PROVIDER=anthropic to use a direct key."
+                "AedelgardProvider needs AEDELGARD_BROKER_URL. Or set "
+                "AGENT_PROVIDER=anthropic to use a direct key."
+            )
+        if not self.device_token and not self.aedk:
+            raise RuntimeError(
+                "AedelgardProvider needs either AEDELGARD_AEDK (one-key: the "
+                "provider mints + refreshes device tokens for you) or a "
+                "pre-minted AEDELGARD_DEVICE_TOKEN. Or AGENT_PROVIDER=anthropic."
             )
         self._httpx = httpx
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+        # Mint eagerly so a bad aedk fails at startup, not mid-conversation.
+        # (Skipped when a pre-minted token was supplied.)
+
+    @staticmethod
+    def _stable_fingerprint() -> str:
+        """A stable per-install device fingerprint. Persisted under the body's
+        data dir so the same machine re-mints against the same fingerprint
+        (the broker binds tokens to it). Falls back to a host-derived hash."""
+        import hashlib
+        from pathlib import Path
+        # Honour the native body's data dir if present; else a dotfile in HOME.
+        base = os.environ.get("AEDELGARD_DATA_DIR") or os.environ.get("XDG_DATA_HOME")
+        root = Path(base) if base else (Path.home() / ".aedelgard")
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            fp_file = root / "device_fingerprint"
+            if fp_file.exists():
+                return fp_file.read_text().strip()
+            import uuid
+            fp = hashlib.sha256(f"{uuid.getnode()}:{uuid.uuid4()}".encode()).hexdigest()[:32]
+            fp_file.write_text(fp)
+            try:
+                fp_file.chmod(0o600)
+            except OSError:
+                pass
+            return fp
+        except OSError:
+            import uuid
+            return hashlib.sha256(str(uuid.getnode()).encode()).hexdigest()[:32]
+
+    async def _mint_device_token(self) -> None:
+        """Exchange the aedk for a fresh device token via POST /v1/sessions.
+        Raises if the aedk is invalid/revoked — same opaque 401 the broker
+        gives (no oracle)."""
+        if not self.aedk:
+            raise RuntimeError(
+                "Aedelgard device token expired and no AEDELGARD_AEDK is set to "
+                "re-mint it. Re-paste your Aedelgard key."
+            )
+        r = await self._client.post(
+            f"{self.broker_url}/v1/sessions",
+            json={"registration_key": self.aedk,
+                  "device_fingerprint": self.device_fingerprint},
+        )
+        if r.status_code != 200:
+            detail = ""
+            try:
+                detail = r.json().get("error", "")
+            except Exception:
+                detail = r.text[:160]
+            raise RuntimeError(
+                f"Aedelgard session mint HTTP {r.status_code}: {detail} "
+                "(check your AEDELGARD_AEDK)."
+            )
+        self.device_token = r.json().get("device_token", "")
+        if not self.device_token:
+            raise RuntimeError("Aedelgard /v1/sessions returned no device_token")
 
     async def complete(self, *, model, max_tokens, system, tools, messages):
         from anthropic.types import Message
-        headers = {"Authorization": f"Bearer {self.device_token}"}
-        if self.device_fingerprint:
-            headers["X-Device-Fingerprint"] = self.device_fingerprint
+        # Ensure we hold a token (mint from aedk on first use).
+        if not self.device_token:
+            await self._mint_device_token()
         payload = {
             "model": model,
             "max_tokens": max_tokens,
@@ -165,9 +246,21 @@ class AedelgardProvider:
             "tools": tools,
             "messages": messages,
         }
-        r = await self._client.post(
-            f"{self.broker_url}/v1/relay/complete", json=payload, headers=headers,
-        )
+
+        async def _post():
+            headers = {"Authorization": f"Bearer {self.device_token}"}
+            if self.device_fingerprint:
+                headers["X-Device-Fingerprint"] = self.device_fingerprint
+            return await self._client.post(
+                f"{self.broker_url}/v1/relay/complete", json=payload, headers=headers,
+            )
+
+        r = await _post()
+        # A 401 means the short-TTL token expired (or was revoked). If we own an
+        # aedk, silently re-mint ONCE and retry — this is what makes one-key real.
+        if r.status_code == 401 and self.aedk:
+            await self._mint_device_token()
+            r = await _post()
         if r.status_code != 200:
             detail = ""
             try:
@@ -580,9 +673,9 @@ _PROVIDER_REQUIREMENTS = {
     "anthropic":    (("ANTHROPIC_API_KEY",),
                      "your own Claude key — you talk to the model directly; "
                      "we are not on the wire (operator-blind by construction)."),
-    "aedelgard":    (("AEDELGARD_DEVICE_TOKEN",),
-                     "an Aedelgard device token (minted from your aedk) — the "
-                     "body thinks via the broker relay; one key, no sk-ant-."),
+    "aedelgard":    (("AEDELGARD_AEDK", "AEDELGARD_DEVICE_TOKEN"),
+                     "your Aedelgard key (aedk) — the body mints + refreshes "
+                     "device tokens for you; one key, no sk-ant-."),
     "gemini":       (("GEMINI_API_KEY", "GOOGLE_API_KEY"),
                      "your own Gemini key — direct to Google; we are not on the wire."),
     "openai":       (("OPENAI_API_KEY",),

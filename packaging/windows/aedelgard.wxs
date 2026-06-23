@@ -65,11 +65,19 @@
       </Directory>
     </StandardDirectory>
 
-    <!-- The big payload: every PyInstaller file, harvested by heat into the
-         "HarvestedFiles" ComponentGroup at build time. -->
+    <!-- The big payload: every PyInstaller file (incl. the bundled 167MB ONNX
+         embedding model). WiX v4 harvests a whole directory at build time via the
+         Files element - no standalone heat tool needed. PayloadDir is supplied as
+         a bind path (-b PayloadDir=...) by build_msi.ps1. -->
     <Feature Id="Main" Title="Aedelgard Body" Level="1">
-      <ComponentGroupRef Id="HarvestedFiles" />
+      <ComponentGroupRef Id="PayloadFiles" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
+
+    <Fragment>
+      <ComponentGroup Id="PayloadFiles" Directory="INSTALLFOLDER">
+        <Files Include="!(bindpath.PayloadDir)\**" />
+      </ComponentGroup>
+    </Fragment>
   </Package>
 </Wix>
