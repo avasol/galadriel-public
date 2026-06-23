@@ -100,11 +100,6 @@ class _NotYetWired:
         raise NotImplementedError
 
 
-class GeminiProvider(_NotYetWired):
-    """google-genai; context caching where it pays. Roadmap."""
-    name = "gemini"
-
-
 class OpenAIProvider(_NotYetWired):
     """chat.completions; automatic prompt caching. Roadmap."""
     name = "openai"
@@ -384,6 +379,183 @@ class BedrockNovaProvider:
         return {"input": u.input_tokens, "cache_read": 0,
                 "cache_write": 0, "output": u.output_tokens}
 
+# ── Gemini — a second BYO brain, direct to Google (we are not on the wire) ─────
+#
+# The thesis made visible across a genuinely different vendor: swap the brain,
+# keep the mind. Talks to Google's generateContent REST API directly via httpx
+# (no new SDK dependency — consistent with AedelgardProvider). BYO key, so the
+# body is operator-blind by construction on this path: plaintext goes from the
+# user's machine straight to Google; Aedelgard is not on the wire.
+#
+# Mapping (same discipline as the Bedrock-Nova brick — full tool parity):
+#   system blocks      -> system_instruction (flattened text; the mind, intact)
+#   anthropic tools    -> tools[].function_declarations[]
+#   role "assistant"   -> "model"; "user" stays "user"
+#   text               -> {"text": ...}
+#   tool_use           -> {"functionCall": {name, args}}        (model turn)
+#   tool_result        -> {"functionResponse": {name, response}} (user turn)
+# Gemini's functionResponse needs the function NAME, but Anthropic tool_result
+# carries only tool_use_id — so we first index id->name from prior tool_use
+# blocks, then resolve each tool_result against it.
+
+_GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def _anthropic_tools_to_gemini(tools):
+    """Anthropic tool defs -> Gemini function_declarations. cache_control and
+    other Anthropic-only keys are dropped (Discipline #2)."""
+    if not tools:
+        return None
+    decls = []
+    for t in tools:
+        schema = dict(t.get("input_schema", {"type": "object"}))
+        decls.append({
+            "name": t["name"],
+            "description": t.get("description", ""),
+            "parameters": schema,
+        })
+    return [{"function_declarations": decls}]
+
+
+def _index_tool_names(messages):
+    """Map tool_use id -> tool name across all assistant messages, so a later
+    tool_result (which only has the id) can be turned into a Gemini
+    functionResponse (which needs the name)."""
+    id_to_name = {}
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            continue
+        for blk in content:
+            if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                id_to_name[blk.get("id")] = blk.get("name")
+    return id_to_name
+
+
+def _anthropic_messages_to_gemini(messages):
+    """Map Anthropic messages -> Gemini contents WITH tool parity."""
+    id_to_name = _index_tool_names(messages)
+    out = []
+    for m in messages:
+        role = "model" if m["role"] == "assistant" else "user"
+        content = m["content"]
+        if isinstance(content, str):
+            out.append({"role": role, "parts": [{"text": content or " "}]})
+            continue
+        parts = []
+        for blk in content:
+            if not isinstance(blk, dict):
+                parts.append({"text": str(blk)}); continue
+            t = blk.get("type")
+            if t == "text":
+                txt = blk.get("text", "")
+                if txt:
+                    parts.append({"text": txt})
+            elif t == "tool_use":
+                parts.append({"functionCall": {
+                    "name": blk.get("name"),
+                    "args": blk.get("input", {}) or {},
+                }})
+            elif t == "tool_result":
+                c = blk.get("content")
+                txt = c if isinstance(c, str) else str(c)
+                name = id_to_name.get(blk.get("tool_use_id"), "unknown_tool")
+                parts.append({"functionResponse": {
+                    "name": name,
+                    "response": {"result": txt or "(empty)"},
+                }})
+        if not parts:
+            parts = [{"text": " "}]
+        out.append({"role": role, "parts": parts})
+    return out
+
+
+class GeminiProvider:
+    """Google Gemini via generateContent REST. BYO key, direct to Google —
+    operator-blind by construction (we are not on the wire). Proves the mind is
+    portable across a second, genuinely different vendor."""
+
+    name = "gemini"
+
+    def __init__(self, *, api_key: str | None = None, model: str | None = None):
+        import httpx
+        self.api_key = (api_key or os.environ.get("GEMINI_API_KEY")
+                        or os.environ.get("GOOGLE_API_KEY") or "")
+        if not self.api_key:
+            raise RuntimeError(
+                "GeminiProvider needs GEMINI_API_KEY (or GOOGLE_API_KEY). "
+                "Or set AGENT_PROVIDER=anthropic to use a Claude key."
+            )
+        self.default_model = model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        # Gemini 2.5 models "think" by default, burning the output budget on
+        # hidden reasoning. GEMINI_THINKING_BUDGET controls it: 0 disables it
+        # (fast, cheap — the default here), -1 lets the model decide.
+        self.thinking_budget = int(os.environ.get("GEMINI_THINKING_BUDGET", "0"))
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+
+    async def complete(self, *, model, max_tokens, system, tools, messages):
+        # `model` is the Anthropic model id from the agent; Gemini ignores it and
+        # uses its own. The mind doesn't care which brain answers.
+        gem_model = self.default_model
+        gen_cfg = {"maxOutputTokens": max_tokens}
+        # Only 2.5 models accept thinkingConfig; harmless to send, but gate to
+        # avoid surprising older models. Budget 0 = no hidden reasoning spend.
+        if "2.5" in gem_model:
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": self.thinking_budget}
+        body = {
+            "contents": _anthropic_messages_to_gemini(messages),
+            "generationConfig": gen_cfg,
+        }
+        sys_text = _anthropic_system_to_text(system)
+        if sys_text:
+            body["systemInstruction"] = {"parts": [{"text": sys_text}]}
+        gem_tools = _anthropic_tools_to_gemini(tools)
+        if gem_tools:
+            body["tools"] = gem_tools
+
+        url = f"{_GEMINI_API_BASE}/models/{gem_model}:generateContent"
+        r = await self._client.post(
+            url, json=body, headers={"x-goog-api-key": self.api_key},
+        )
+        if r.status_code != 200:
+            detail = r.text[:200]
+            raise RuntimeError(f"Gemini HTTP {r.status_code}: {detail}")
+        data = r.json()
+
+        cands = data.get("candidates") or []
+        out_blocks = []
+        finish = "end_turn"
+        if cands:
+            cand = cands[0]
+            for part in cand.get("content", {}).get("parts", []):
+                if "text" in part and part["text"]:
+                    out_blocks.append(_NovaBlock(text=part["text"]))
+                elif "functionCall" in part:
+                    fc = part["functionCall"]
+                    out_blocks.append(_NovaBlock(tool_use={
+                        "id": f"gem_{fc.get('name','tool')}_{len(out_blocks)}",
+                        "name": fc.get("name"),
+                        "input": fc.get("args", {}) or {},
+                    }))
+        if not out_blocks:
+            out_blocks = [_NovaBlock(text="")]
+        # If any tool_use block is present, the agent must run the cascade.
+        if any(getattr(b, "type", None) == "tool_use" for b in out_blocks):
+            finish = "tool_use"
+
+        um = data.get("usageMetadata", {})
+        return _NovaResponse(
+            out_blocks, finish,
+            um.get("promptTokenCount", 0),
+            um.get("candidatesTokenCount", 0),
+        )
+
+    def usage(self, raw) -> Usage:
+        u = raw.usage
+        return {"input": u.input_tokens, "cache_read": 0,
+                "cache_write": 0, "output": u.output_tokens}
+
+
 _REGISTRY = {
     "anthropic": AnthropicProvider,
     "gemini": GeminiProvider,
@@ -443,4 +615,8 @@ def make_provider(provider_name: str | None = None, *,
         )
     if cls is AnthropicProvider:
         return AnthropicProvider(client=anthropic_client, api_key=api_key)
+    if cls is GeminiProvider:
+        # The agent passes the ANTHROPIC key positionally; Gemini must NOT use
+        # it. Always self-read GEMINI_API_KEY / GOOGLE_API_KEY from env instead.
+        return GeminiProvider()
     return cls()

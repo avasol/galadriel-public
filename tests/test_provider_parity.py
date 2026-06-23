@@ -364,3 +364,67 @@ def test_provider_requirements_reads_env_default(monkeypatch):
     monkeypatch.setenv("AGENT_PROVIDER", "aedelgard")
     needed, _ = provider_requirements()  # no arg -> read env
     assert needed == ("AEDELGARD_DEVICE_TOKEN",)
+
+
+# ─── Gemini provider: a second BYO brain, full tool parity (no network) ───────
+#
+# These pin the Anthropic<->Gemini translation. The mind (system blocks) must
+# survive, tools must round-trip, and a tool_result must resolve back to its
+# function NAME (Gemini needs the name; Anthropic only carries the id).
+
+def test_gemini_tools_mapping():
+    from harness.providers import _anthropic_tools_to_gemini
+    tools = [{"name": "run_shell", "description": "run a command",
+              "input_schema": {"type": "object", "properties": {"cmd": {"type": "string"}}},
+              "cache_control": {"type": "ephemeral"}}]
+    out = _anthropic_tools_to_gemini(tools)
+    assert out[0]["function_declarations"][0]["name"] == "run_shell"
+    # cache_control must NOT leak into Gemini's schema
+    assert "cache_control" not in out[0]["function_declarations"][0]
+
+
+def test_gemini_messages_roundtrip_tool_cascade():
+    from harness.providers import _anthropic_messages_to_gemini
+    messages = [
+        {"role": "user", "content": "list files"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu_1", "name": "run_shell", "input": {"cmd": "ls"}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu_1", "content": "file.txt"},
+        ]},
+    ]
+    out = _anthropic_messages_to_gemini(messages)
+    # roles: user, model, user
+    assert [c["role"] for c in out] == ["user", "model", "user"]
+    # tool_use -> functionCall
+    assert out[1]["parts"][0]["functionCall"]["name"] == "run_shell"
+    # tool_result -> functionResponse WITH the resolved name (not the id)
+    fr = out[2]["parts"][0]["functionResponse"]
+    assert fr["name"] == "run_shell"
+    assert "file.txt" in fr["response"]["result"]
+
+
+def test_gemini_system_blocks_flatten_to_instruction():
+    from harness.providers import _anthropic_system_to_text
+    system = [{"type": "text", "text": "You are Galadriel."},
+              {"type": "text", "text": "Memory: the mind persists."}]
+    txt = _anthropic_system_to_text(system)
+    assert "Galadriel" in txt and "mind persists" in txt
+
+
+def test_gemini_provider_requires_a_google_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    from harness.providers import GeminiProvider
+    import pytest
+    with pytest.raises(RuntimeError):
+        GeminiProvider()
+
+
+def test_gemini_in_registry_and_no_longer_stub(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-test")
+    from harness.providers import make_provider, GeminiProvider
+    p = make_provider("gemini")
+    assert isinstance(p, GeminiProvider)
+    assert p.name == "gemini"
