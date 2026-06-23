@@ -67,14 +67,23 @@
     </StandardDirectory>
 
     <!-- The big payload: every PyInstaller file (incl. the bundled 167MB ONNX
-         embedding model). WiX v4's <Files> element harvests a whole directory at
-         build time and emits its own components automatically. It is a valid
-         direct child of <Feature> (NOT of <ComponentGroup> - that was WIX0005).
+         embedding model). In WiX v4 the <Files> harvest element lives inside a
+         <ComponentGroup> in a sibling <Fragment>; the <Feature> pulls it in by
+         reference. (Files-in-Feature -> WIX0005; Files-in-bare-ComponentGroup
+         without Directory also fails. This is the shape that actually builds.)
          PayloadDir is supplied as a bind path (-b PayloadDir=...) by build_msi.ps1. -->
     <Feature Id="Main" Title="Aedelgard Body" Level="1">
-      <Files Include="!(bindpath.PayloadDir)\**" Directory="INSTALLFOLDER" />
+      <ComponentGroupRef Id="PayloadFiles" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
 
   </Package>
+
+  <!-- A Fragment is a sibling of Package in WiX v4. The Files element harvests
+       the whole PayloadDir at build time, rooted at INSTALLFOLDER. -->
+  <Fragment>
+    <ComponentGroup Id="PayloadFiles" Directory="INSTALLFOLDER">
+      <Files Include="!(bindpath.PayloadDir)\**" />
+    </ComponentGroup>
+  </Fragment>
 </Wix>
