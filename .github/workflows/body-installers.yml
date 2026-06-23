@@ -70,16 +70,17 @@ jobs:
       # ── Windows: PyInstaller -> .msi via WiX (or zip fallback) ───────
       - name: Build msi (Windows)
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
+        env:
+          # BODY_VERSION is derived from the git tag inside the script below.
+          WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
           pyinstaller packaging/common/aedelgard_body.spec --noconfirm
-          # Minimal: ship a versioned zip if WiX is not configured. The .msi
-          # authoring (packaging/windows/aedelgard.wxs) is the polish pass.
-          if [ -f packaging/windows/build_msi.ps1 ]; then
-            powershell -ExecutionPolicy Bypass -File packaging/windows/build_msi.ps1
-          else
-            cd dist && 7z a "Aedelgard-Body-Setup.zip" "aedelgard-body" && cd ..
-          fi
+          # Derive a clean numeric version from the tag (v1.2.3 -> 1.2.3).
+          $tag = "${{ github.ref_name }}"
+          if ($tag -match '^v(\\d+\\.\\d+\\.\\d+)') { $env:BODY_VERSION = $Matches[1] } else { $env:BODY_VERSION = "0.0.0" }
+          powershell -ExecutionPolicy Bypass -File packaging/windows/build_msi.ps1
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

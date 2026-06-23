@@ -10,6 +10,7 @@ Build:  pyinstaller packaging/common/aedelgard_body.spec --noconfirm
 Output: dist/aedelgard-body  (onedir — fast start, easy to wrap in AppDir/.app)
 """
 import os
+import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 ROOT = os.path.abspath(os.getcwd())
@@ -56,7 +57,10 @@ exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
     name="aedelgard-body",
-    console=True,           # keep a log window; the UI is the browser
+    # No console window on Windows (a black terminal flash is unprofessional
+    # for a double-clicked app); keep it elsewhere where users may launch
+    # from a shell. Logs still go to the body's data dir regardless.
+    console=(sys.platform != "win32"),
     disable_windowed_traceback=False,
 )
 coll = COLLECT(

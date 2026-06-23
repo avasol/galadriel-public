@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX v4 authoring for the Aedelgard body Windows installer (.msi).
+
+  This turns the PyInstaller onedir output (dist/aedelgard-body/) into a proper
+  Windows install:
+    * installs under Program Files\Aedelgard
+    * Start Menu shortcut "Aedelgard Body" (launches the bodiless tray launcher,
+      which opens the browser to the local Tower UI / first-run /setup)
+    * registers in Add/Remove Programs with a clean uninstall
+    * per-machine install, upgrade-aware (same UpgradeCode across versions)
+
+  The harvested file list (the hundreds of files PyInstaller emits, including the
+  bundled 167MB ONNX embedding model) is generated at build time by `heat` into
+  Files.wxs — we do NOT hand-list them here. See build_msi.ps1.
+
+  Version is injected at build time via the ProductVersion preprocessor var.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Aedelgard Body"
+      Manufacturer="Millenion AB"
+      Version="$(var.ProductVersion)"
+      UpgradeCode="b7e6a4c2-9d31-4f8a-8c2e-1a5d3f0b9c44"
+      Scope="perMachine"
+      Compressed="yes">
+
+    <!-- Block downgrades, auto-remove older versions on upgrade. -->
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of Aedelgard Body is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Add/Remove Programs metadata. -->
+    <Property Id="ARPCOMMENTS" Value="Your Aedelgard mind, running locally on your own machine." />
+    <Property Id="ARPURLINFOABOUT" Value="https://aedelgard.com" />
+    <Icon Id="AedelgardIcon" SourceFile="packaging\windows\aedelgard.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AedelgardIcon" />
+
+    <!-- Install tree: Program Files\Aedelgard\ -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Aedelgard" />
+    </StandardDirectory>
+
+    <!-- Start Menu folder + shortcut. -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppShortcutFolder" Name="Aedelgard">
+        <Component Id="StartMenuShortcut" Guid="*">
+          <Shortcut
+              Id="BodyShortcut"
+              Name="Aedelgard Body"
+              Description="Your local Aedelgard mind"
+              Target="[INSTALLFOLDER]aedelgard-body.exe"
+              WorkingDirectory="INSTALLFOLDER"
+              Icon="AedelgardIcon" />
+          <RemoveFolder Id="RemoveAppShortcutFolder" On="uninstall" />
+          <RegistryValue
+              Root="HKCU"
+              Key="Software\Aedelgard\Body"
+              Name="installed"
+              Type="integer"
+              Value="1"
+              KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- The big payload: every PyInstaller file, harvested by heat into the
+         "HarvestedFiles" ComponentGroup at build time. -->
+    <Feature Id="Main" Title="Aedelgard Body" Level="1">
+      <ComponentGroupRef Id="HarvestedFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>
