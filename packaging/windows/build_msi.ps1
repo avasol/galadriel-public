@@ -26,15 +26,17 @@ if (-not (Test-Path $payload)) {
     throw "PyInstaller output not found at $payload (run pyinstaller first)."
 }
 
-# 1. WiX v4 CLI.
+# 1. WiX v4 CLI + the Util extension (provides the <Files> directory-harvest element).
 dotnet tool install --global wix --version 4.*
 $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
+wix extension add --global WixToolset.Util.wixext/4.*
 
 # 2. Build the MSI. The payload directory is harvested by WiX at build time via
 #    the Files element in aedelgard.wxs (WiX v4 has built-in harvesting; the
 #    standalone heat tool from v3 is gone). PayloadDir is passed as a bind var.
 wix build `
     "packaging\windows\aedelgard.wxs" `
+    -ext WixToolset.Util.wixext `
     -d "ProductVersion=$version" `
     -b "PayloadDir=$payload" `
     -out "dist\Aedelgard-Body-Setup.msi"

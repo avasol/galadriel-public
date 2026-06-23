@@ -17,7 +17,8 @@
 
   Version is injected at build time via the ProductVersion preprocessor var.
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package
       Name="Aedelgard Body"
       Manufacturer="Millenion AB"
