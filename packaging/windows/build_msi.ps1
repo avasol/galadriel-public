@@ -21,7 +21,7 @@ $ErrorActionPreference = "Stop"
 $version = if ($env:BODY_VERSION) { $env:BODY_VERSION } else { "0.0.0" }
 Write-Host "Building Aedelgard Body MSI v$version"
 
-$payload = "dist\aedelgard-body"
+$payload = (Resolve-Path "dist\aedelgard-body").Path  # absolute - WiX resolves bindpath relative to the .wxs dir otherwise (WIX8601/8600 = zero files)
 if (-not (Test-Path $payload)) {
     throw "PyInstaller output not found at $payload (run pyinstaller first)."
 }
@@ -44,7 +44,13 @@ wix build `
 if (-not (Test-Path "dist\Aedelgard-Body-Setup.msi")) {
     throw "wix build did not produce the MSI."
 }
-Write-Host "MSI built: dist\Aedelgard-Body-Setup.msi"
+# Guard against a green build that harvested zero files (WIX8600) - a real MSI
+# carrying the ~167MB ONNX payload is tens of MB; a stub is a few KB.
+$msiBytes = (Get-Item "dist\Aedelgard-Body-Setup.msi").Length
+if ($msiBytes -lt 10MB) {
+    throw "MSI is only $msiBytes bytes - payload harvest produced an empty installer. Check the PayloadDir bindpath."
+}
+Write-Host "MSI built: dist\Aedelgard-Body-Setup.msi ($([math]::Round($msiBytes/1MB,1)) MB)"
 
 # 3. Optional Authenticode signing - stops the SmartScreen "Unknown Publisher"
 #    scare. Skipped silently if no cert is configured, so unsigned dev builds
