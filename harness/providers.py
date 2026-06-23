@@ -116,11 +116,85 @@ class LocalProvider(_NotYetWired):
     name = "local"
 
 
-class AedelgardProvider(_NotYetWired):
+class AedelgardProvider:
     """The body thinks via the Aedelgard broker as its provider endpoint — one
-    key (aedk), no sk-ant-. The 'killer' one-key onboarding. Roadmap; depends on
-    the broker exposing a completion relay. See ROADMAP_aedelgard 'THE BODY'."""
+    key (aedk), no sk-ant-. The 'killer' one-key onboarding.
+
+    The body owns its soul + memory locally and assembles its OWN Anthropic-
+    shaped request (system, tools, messages). This provider forwards that
+    request verbatim to the broker's transparent completion relay
+    (POST /v1/relay/complete), authenticating with the device token minted from
+    the aedk. The broker injects the metered Claude key server-side and returns
+    the raw Anthropic response, which we rebuild into a real anthropic.types
+    Message — so the agent's tool cascade (stop_reason/.type/.name/.input/.id)
+    walks a relayed turn IDENTICALLY to a direct Anthropic turn.
+
+    Config (env):
+      AEDELGARD_BROKER_URL    — broker base, e.g. https://hq.aedelgard.com
+      AEDELGARD_DEVICE_TOKEN  — device token (from /v1/sessions, via the aedk)
+      AEDELGARD_DEVICE_FINGERPRINT — the fingerprint bound into that token
+
+    Honest cost (named, not hidden): relaying puts Aedelgard in the in-flight
+    inference path — the broker sees the prompt in transit while forwarding it.
+    Blind at rest; not operator-blind in-flight. The BYO-key path (AnthropicProvider
+    et al.) avoids this by talking to the model directly. This is the documented
+    trade of one-key convenience."""
+
     name = "aedelgard"
+
+    def __init__(self, *, broker_url: str | None = None,
+                 device_token: str | None = None,
+                 device_fingerprint: str | None = None):
+        import httpx
+        self.broker_url = (broker_url or os.environ.get("AEDELGARD_BROKER_URL", "")).rstrip("/")
+        self.device_token = device_token or os.environ.get("AEDELGARD_DEVICE_TOKEN", "")
+        self.device_fingerprint = device_fingerprint or os.environ.get("AEDELGARD_DEVICE_FINGERPRINT", "")
+        if not self.broker_url or not self.device_token:
+            raise RuntimeError(
+                "AedelgardProvider needs AEDELGARD_BROKER_URL and "
+                "AEDELGARD_DEVICE_TOKEN (mint a device token from your aedk via "
+                "/v1/sessions). Or set AGENT_PROVIDER=anthropic to use a direct key."
+            )
+        self._httpx = httpx
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+
+    async def complete(self, *, model, max_tokens, system, tools, messages):
+        from anthropic.types import Message
+        headers = {"Authorization": f"Bearer {self.device_token}"}
+        if self.device_fingerprint:
+            headers["X-Device-Fingerprint"] = self.device_fingerprint
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "tools": tools,
+            "messages": messages,
+        }
+        r = await self._client.post(
+            f"{self.broker_url}/v1/relay/complete", json=payload, headers=headers,
+        )
+        if r.status_code != 200:
+            detail = ""
+            try:
+                detail = r.json().get("error", "")
+            except Exception:
+                detail = r.text[:160]
+            raise RuntimeError(f"Aedelgard relay HTTP {r.status_code}: {detail}")
+        raw = r.json().get("response")
+        if not raw:
+            raise RuntimeError("Aedelgard relay returned no response payload")
+        # Rebuild a real Anthropic Message so downstream is byte-for-byte the
+        # same shape the AnthropicProvider returns.
+        return Message.model_validate(raw)
+
+    def usage(self, raw) -> Usage:
+        u = raw.usage
+        return {
+            "input": getattr(u, "input_tokens", 0),
+            "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
+            "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
+            "output": getattr(u, "output_tokens", 0),
+        }
 
 
 

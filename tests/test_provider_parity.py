@@ -10,6 +10,7 @@ regress. This test is the guard.
 Run: python -m pytest tests/test_provider_parity.py -q
 (no network, no API spend — the Anthropic client is mocked.)
 """
+import os
 import asyncio
 import sys
 import types
@@ -226,3 +227,99 @@ def test_nova_tool_result_history_maps_to_converse():
     assert tu["toolUseId"] == "tu_1"
     assert tu["name"] == "run_shell"
     assert tu["input"] == {"command": "ls"}
+
+
+# ─── Aedelgard relay — the body's one-key brain socket (Rung A) ───────────────
+#
+# The body thinks via the broker's transparent completion relay with ONLY an
+# aedk-derived device token — no sk-ant- on the user's machine. These tests pin
+# the contract: the provider forwards the body's own Anthropic-shaped request
+# verbatim with the right auth, and rebuilds the raw relay response into a real
+# anthropic.types.Message so the agent's tool cascade walks it identically to a
+# direct Anthropic turn. httpx is mocked — no network.
+
+def _aedelgard_provider_with_capture():
+    """Build an AedelgardProvider whose httpx POST is captured, returning a
+    canned relay response (a tool_use turn)."""
+    from harness.providers import AedelgardProvider
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"response": {
+                "id": "msg_relay_1", "type": "message", "role": "assistant",
+                "model": "claude-sonnet-4-20250514",
+                "content": [
+                    {"type": "text", "text": "checking"},
+                    {"type": "tool_use", "id": "tu_9", "name": "run_shell",
+                     "input": {"command": "date"}},
+                ],
+                "stop_reason": "tool_use", "stop_sequence": None,
+                "usage": {"input_tokens": 42, "output_tokens": 7,
+                          "cache_read_input_tokens": 1000,
+                          "cache_creation_input_tokens": 0},
+            }}
+
+    async def _post(url, json=None, headers=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return _Resp()
+
+    prov = AedelgardProvider(
+        broker_url="https://hq.aedelgard.test/",
+        device_token="dev-token-abc",
+        device_fingerprint="fp-xyz",
+    )
+    prov._client.post = _post  # type: ignore
+    return prov, captured
+
+
+def test_aedelgard_provider_forwards_request_and_auth():
+    """The provider must POST the body's own {model,max_tokens,system,tools,
+    messages} verbatim to /v1/relay/complete, with the device token + fingerprint
+    as auth — the 'one key' contract."""
+    prov, captured = _aedelgard_provider_with_capture()
+    asyncio.run(prov.complete(
+        model="claude-sonnet-4-20250514", max_tokens=4096,
+        system=SYSTEM_BLOCKS, tools=TOOLS, messages=MESSAGES,
+    ))
+    assert captured["url"] == "https://hq.aedelgard.test/v1/relay/complete"
+    assert captured["headers"]["Authorization"] == "Bearer dev-token-abc"
+    assert captured["headers"]["X-Device-Fingerprint"] == "fp-xyz"
+    body = captured["json"]
+    assert body["model"] == "claude-sonnet-4-20250514"
+    assert body["max_tokens"] == 4096
+    assert body["system"] == SYSTEM_BLOCKS
+    assert body["tools"] == TOOLS
+    assert body["messages"] == MESSAGES
+
+
+def test_aedelgard_provider_rebuilds_anthropic_tool_use():
+    """The relay's raw JSON must rebuild into a real anthropic.types.Message so
+    the agent loop reads stop_reason/.type/.name/.input/.id unchanged."""
+    prov, _ = _aedelgard_provider_with_capture()
+    resp = asyncio.run(prov.complete(
+        model="m", max_tokens=10, system=SYSTEM_BLOCKS, tools=TOOLS, messages=MESSAGES,
+    ))
+    assert resp.stop_reason == "tool_use"
+    tu = [b for b in resp.content if b.type == "tool_use"]
+    assert len(tu) == 1
+    assert tu[0].name == "run_shell"
+    assert tu[0].input == {"command": "date"}
+    assert tu[0].id == "tu_9"
+    # usage() normalises identically to AnthropicProvider (cost panel parity)
+    u = prov.usage(resp)
+    assert u == {"input": 42, "cache_read": 1000, "cache_write": 0, "output": 7}
+
+
+def test_aedelgard_provider_requires_config():
+    """No broker URL / device token -> honest RuntimeError, not silent failure."""
+    from harness.providers import AedelgardProvider
+    import pytest as _pytest
+    # clear any ambient env
+    for k in ("AEDELGARD_BROKER_URL", "AEDELGARD_DEVICE_TOKEN"):
+        os.environ.pop(k, None)
+    with _pytest.raises(RuntimeError):
+        AedelgardProvider()
