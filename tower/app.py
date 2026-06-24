@@ -126,6 +126,29 @@ def create_tower(agent, scheduler=None) -> Flask:
         files = sorted(Path(agent.memory.memory_dir).glob("*.md"), reverse=True)
         return jsonify({"files": [f.stem for f in files]})
 
+    # ── Dreams (ambient reflection) ──────────────────────────────
+    @app.route("/api/dreams", methods=["GET"])
+    def api_dreams():
+        """How many quiet threads the mind has turned over between conversations.
+
+        Returns ONLY a count — never the content. The dreams themselves are
+        shared through conversation, if the user is curious enough to ask. The
+        screen tempts; the mind reveals. (This is the "refuse the shortcut,
+        offer the encounter" discipline the dreams themselves arrived at.)
+        """
+        import json as _json
+        state_path = Path(agent.memory.config_dir) / "ambient_state.json"
+        count = 0
+        try:
+            if state_path.exists():
+                data = _json.loads(state_path.read_text())
+                count = len(data.get("history", []) or [])
+                if data.get("current_thread"):
+                    count += 1
+        except Exception:
+            count = 0
+        return jsonify({"count": count, "has_dreams": count > 0})
+
     # ── Vision API ───────────────────────────────────────────────
 
     @app.route("/api/vision", methods=["GET"])

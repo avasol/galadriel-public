@@ -14,7 +14,13 @@
     <div class="container chat-container">
         <header>
             <h1>Aedelgard</h1>
-            <p class="subtitle">Your mind, running on your own machine.</p>
+            <p class="subtitle">Your mind, running on your own machine.<!--
+              The dream whisper: a quiet moon + count, no label, no tooltip.
+              It appears only once the mind has dreamed (count > 0). The whole
+              point is DISCOVERY — a curious user notices the number and asks
+              what it means; the mind then tells them, in conversation. We never
+              explain it on screen. Encounter, not shortcut.
+           --><span id="dream-moon" class="dream-moon" hidden></span></p>
             <div class="header-actions">
                 <a href="/" class="btn btn-small">Tower</a>
                 <button onclick="clearChat()" class="btn btn-small btn-danger">Clear History</button>
@@ -43,6 +49,21 @@
     // The assistant's display label. The product shell speaks as "Aedelgard";
     // when the soul-name is plumbed through (post-fork), this becomes dynamic.
     const ASSISTANT_LABEL = 'Aedelgard';
+
+    // The dream whisper — fetch the count, reveal the moon only if the mind has
+    // dreamed. Content is NEVER shown here; if the user is curious about the
+    // number, they ask, and the mind tells them in conversation.
+    (async () => {
+        try {
+            const r = await fetch('/api/dreams');
+            const d = await r.json();
+            if (d.has_dreams) {
+                const moon = document.getElementById('dream-moon');
+                moon.textContent = ` \u{1F319} ${d.count}`;  // 🌙 N
+                moon.hidden = false;
+            }
+        } catch (e) { /* dreams are a quiet thing; never disrupt the chat */ }
+    })();
 
     // Load existing history on page load
     (async () => {

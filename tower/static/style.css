@@ -275,3 +275,21 @@ input:checked + .toggle-slider::before {
     color: var(--muted);
     text-align: right;
 }
+
+/* The dream whisper — a quiet moon + count beside the subtitle. Deliberately
+   understated: no badge, no label, no tooltip. It should read as something the
+   mind quietly carries, noticed only by a curious eye. Discovery is the feature;
+   the user asks the mind what it means. (gold-dim matches the keystone amber.) */
+.dream-moon {
+    color: var(--gold-dim);
+    font-size: 0.85em;
+    letter-spacing: 0.02em;
+    opacity: 0.55;
+    cursor: default;
+    transition: opacity 0.4s ease, text-shadow 0.4s ease;
+    user-select: none;
+}
+.dream-moon:hover {
+    opacity: 0.95;
+    text-shadow: 0 0 6px rgba(232, 184, 120, 0.45);  /* a faint kept-flame glow */
+}

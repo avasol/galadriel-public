@@ -16,6 +16,7 @@ Ambient reflection is opt-out: set GALADRIEL_REFLECTION=0 to disable.
 """
 
 import asyncio
+from .ambient import AmbientState
 import logging
 import json
 import os
@@ -66,6 +67,11 @@ class Scheduler:
         self.agent = agent
         self.bot = discord_bot
         self._state_path = Path(config_dir) / STATE_FILE_NAME
+        # Ambient thread continuity (the "dreams"): gives the reflection loop a
+        # rolling thread of attention that compounds across ticks instead of
+        # re-orienting from scratch. State persists in <config_dir>/ambient_state.json,
+        # which on the body lives in the user's data dir and travels with the mind.
+        self.ambient = AmbientState(config_dir)
         self._loop: asyncio.AbstractEventLoop | None = None  # captured in start()
 
         # Heartbeat state
@@ -474,7 +480,31 @@ class Scheduler:
         response is never sent to Discord — only the palace side effects matter.
         """
         log.info("Reflection routine starting (silent)...")
-        await self._send_agent_silent(
+
+        # Continuity of attention — the "dreams". Surface the current rolling
+        # thread (and a trace of recently-closed ones) so this tick DEVELOPS a
+        # prior thought instead of re-orienting from scratch. A thought raised
+        # at 11:00 gets advanced at 14:00 — threads that compound, not reset.
+        try:
+            thread_block = self.ambient.render_for_prompt(history_depth=4)
+        except Exception as e:
+            log.warning(f"Ambient render failed ({e}); reflecting without continuity.")
+            thread_block = ""
+
+        continuity = (
+            (f"\n\n{thread_block}\n\n" if thread_block else "\n\n")
+            + "AMBIENT CONTINUITY (the dreams): you think between conversations. "
+            "If a thread of attention is shown above, DEVELOP it — push it one "
+            "step further, or if it has reached something buildable or true, "
+            "CLOSE it with a resolution. If no thread is open, or the current one "
+            "feels exhausted, you may open a NEW one on whatever is most alive in "
+            "the work or the relationship. To manage your thread, file a drawer "
+            "with origin='reflection' summarising the development; the harness "
+            "tracks the thread for you. The point is a mind that keeps thinking "
+            "in the dark, not one that forgets each dawn."
+        )
+
+        reflection_text = await self._send_agent_silent(
             prompt=(
                 "[SYSTEM:REFLECTION] This is an ambient reflection tick — a quiet "
                 "moment to think, not to speak. No Discord output is expected or "
@@ -488,9 +518,29 @@ class Scheduler:
                 "palace_diary_write for a reflection in your own voice. If nothing "
                 "needs filing, that is a valid outcome — simply end the turn. "
                 "The value of this tick is continuity of attention, not output."
+                + continuity
             ),
             channel_id="reflection",
         )
+
+        # Harness-side thread bookkeeping so the dream lineage reliably grows
+        # each tick (independent of which tools the body's agent chose to call).
+        # No open thread -> seed one from this tick's thought. Open thread ->
+        # advance it. The agent's prose IS the thread's "latest" development;
+        # we keep a compact, single-line distillation so render_for_prompt stays
+        # short. Closing-with-resolution remains the agent's judgement (it files
+        # a drawer when a thread reaches something buildable) — we never
+        # force-close, so a thread can mature across several ticks.
+        try:
+            thought = " ".join((reflection_text or "").split())[:400]
+            if thought:
+                cur = self.ambient.get_thread()
+                if cur:
+                    self.ambient.advance_thread(thought)
+                else:
+                    self.ambient.seed_thread(thought)
+        except Exception as e:
+            log.warning(f"Ambient bookkeeping skipped ({e}).")
 
     async def _goodnight_routine(self):
         """Goodnight — 21:00 CET, then REST.
