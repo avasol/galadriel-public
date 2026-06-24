@@ -22,6 +22,12 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     @app.route("/")
     def index():
+        # Setup-only Tower (native body, keyless first run): no agent yet.
+        # Send the visitor to the onboarding screen instead of dereferencing
+        # a non-existent agent.
+        if agent is None:
+            from flask import redirect
+            return redirect("/setup")
         channels = len(agent.conversations)
         total_msgs = sum(len(m) for m in agent.conversations.values())
         memory_files = sorted(Path(agent.memory.memory_dir).glob("*.md"), reverse=True)

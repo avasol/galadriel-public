@@ -54,6 +54,19 @@ def main():
     needed, hint = provider_requirements(provider)
     if needed and not any(os.environ.get(v) for v in needed):
         names = " or ".join(needed)
+        # The native body MUST NOT die when keyless — that is precisely the
+        # first-run state the /setup screen exists to resolve. Booting the
+        # agent needs a brain credential, so in body mode we instead start a
+        # setup-only Tower (agent=None) that serves /setup, collects the ONE
+        # key (Aedelgard) or a BYO model key, writes the .env, and asks the
+        # user to relaunch. Non-body (Docker/source) runs keep the hard exit.
+        if os.environ.get("GALADRIEL_BODY") == "1":
+            log.info(
+                f"First run: no brain credential yet (provider {provider!r}). "
+                f"Starting setup-only Tower — open /setup to choose your brain."
+            )
+            start_tower(agent=None, scheduler=None)
+            return
         log.error(
             f"AGENT_PROVIDER={provider!r} needs {names}. {hint} "
             f"Copy .env.example to .env and set it."
