@@ -336,9 +336,88 @@ def _setup_file_logging() -> "Path | None":
         return None
 
 
+# ── Windows always-on: per-user logon auto-start ─────────────────────────────
+# SPEC: packaging/windows/SPEC_always_on_logon.md. PER-USER, never LocalSystem
+# (a Session-0 service can't read %APPDATA%\\Aedelgard — the user's mind). The
+# body self-registers a per-user Scheduled Task at logon when the install marker
+# is set. Full-dreaming: no throttle, the mind is simply present.
+
+_TASK_NAME = "Aedelgard\\Body"  # schtasks folder\\name
+
+
+def _autostart_desired() -> bool:
+    """True if the user opted into logon auto-start (the MSI checkbox writes
+    HKCU\\Software\\Aedelgard\\Body\\autostart=1; default ON)."""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\\Aedelgard\\Body") as k:
+            val, _ = winreg.QueryValueEx(k, "autostart")
+            return int(val) == 1
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
+def _logon_task_exists() -> bool:
+    import subprocess
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", _TASK_NAME],
+                          capture_output=True, text=True)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _register_logon_task() -> None:
+    """Register a PER-USER logon task running this exe with --logon. Runs as the
+    current user (interactive), least privilege, never stops on idle/battery —
+    the body must stay present and dreaming. Idempotent."""
+    import subprocess
+    if _logon_task_exists():
+        return
+    exe = sys.executable  # the packaged aedelgard-body.exe
+    # /SC ONLOGON + /IT (interactive) + /RL LIMITED; /F overwrites if stale.
+    cmd = [
+        "schtasks", "/Create", "/TN", _TASK_NAME,
+        "/TR", f'"{exe}" --logon',
+        "/SC", "ONLOGON",
+        "/RL", "LIMITED",
+        "/IT",
+        "/F",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode == 0:
+            log.info("Registered per-user logon auto-start task %s", _TASK_NAME)
+        else:
+            log.warning("Could not register logon task: %s", r.stderr.strip())
+    except Exception as e:
+        log.warning("Logon task registration failed: %s", e)
+
+
+def _maybe_self_register_autostart() -> None:
+    """On a normal (non --logon) launch, if the user opted in and the task is
+    absent, register it — from the user's own context, so no admin needed."""
+    if os.name != "nt":
+        return
+    if "--logon" in sys.argv:
+        return  # don't re-register from within the auto-started run
+    if _autostart_desired() and not _logon_task_exists():
+        _register_logon_task()
+
+
 def main() -> None:
     log_path = _setup_file_logging()
-    log.info("Aedelgard body launching (log: %s)", log_path)
+    logon_mode = "--logon" in sys.argv  # auto-started at logon: stay silent
+    log.info("Aedelgard body launching%s (log: %s)",
+             " [logon auto-start]" if logon_mode else "", log_path)
+
+    # If the user opted into always-on, register the per-user logon task now
+    # (from their own context — no admin). No-op if already present or not opted.
+    _maybe_self_register_autostart()
 
     # Resolve the port BEFORE preparing the env, so the harness binds what we
     # chose (and so a stranger on 8080 triggers a clean fallback, not a zombie).
@@ -400,6 +479,20 @@ def main() -> None:
         for _ in range(10):
             if server.is_alive():
                 server.join(timeout=1.0)
+        return
+
+    # Logon auto-start: the mind should be PRESENT and dreaming, silently. Do
+    # NOT fling a window/browser tab at the user on every boot. They open it when
+    # they want via the Start Menu shortcut (the single-instance guard routes to
+    # this running instance). Just keep the server alive in the foreground.
+    if logon_mode:
+        log.info("Logon auto-start: body present and dreaming silently on %s. "
+                 "Open it from the Start Menu when you want it.", url)
+        try:
+            while server.is_alive():
+                server.join(timeout=1.0)
+        except KeyboardInterrupt:
+            pass
         return
 
     # Server is up. Try the native window; on ANY failure fall back to browser
