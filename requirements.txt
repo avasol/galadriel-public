@@ -6,3 +6,7 @@ mempalace>=3.3.2,<3.4
 
 # IANA tz database for zoneinfo on Windows (no system tz db) — body packaging
 tzdata
+
+# Native app window for the body (Windows/macOS). Optional: the launcher
+# falls back to the system browser if it (or its OS backend) is unavailable.
+# Installed per-OS in CI, not here, to avoid Linux GTK bundling complexity.

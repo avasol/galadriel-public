@@ -25,11 +25,16 @@ datas = [
 _onnx = os.path.join(ROOT, "packaging", "common", "onnx_models")
 if os.path.isdir(_onnx):
     datas.append((_onnx, "packaging/common/onnx_models"))
+# App icon (rendered keystone mark) — used for the native pywebview window on
+# Linux and as a bundled fallback; Windows/mac take their icon from the exe/.app.
+_icondir = os.path.join(ROOT, "packaging", "common", "icon_render")
+if os.path.isdir(_icondir):
+    datas.append((_icondir, "packaging/common/icon_render"))
 
 # mempalace + chromadb pull a lot in dynamically; collect generously.
 hiddenimports = []
 for pkg in ("mempalace", "chromadb", "anthropic", "flask", "dotenv",
-            "google.generativeai", "discord", "tzdata"):
+            "google.generativeai", "discord", "tzdata", "webview"):
     try:
         hiddenimports += collect_submodules(pkg)
     except Exception:
@@ -68,6 +73,8 @@ exe = EXE(
     # from a shell. Logs still go to the body's data dir regardless.
     console=(sys.platform != "win32"),
     disable_windowed_traceback=False,
+    icon=(os.path.join(ROOT, "packaging", "windows", "aedelgard.ico")
+          if sys.platform == "win32" else None),
 )
 coll = COLLECT(
     exe, a.binaries, a.datas,

@@ -157,6 +157,57 @@ def open_browser_when_ready(url: str, timeout: float = 30.0) -> None:
         log.info("Open your browser to %s", url)
 
 
+def open_native_window(url: str, icon_path: "Path | None" = None) -> bool:
+    """Open the chat UI in a NATIVE app window (not the system browser).
+
+    Uses pywebview, which wraps the OS-native webview (Edge WebView2 on Windows,
+    WebKit on macOS, GTK/Qt WebKit on Linux) around our localhost UI — giving a
+    real "app" feeling, no browser chrome, its own taskbar icon. pywebview's
+    .start() BLOCKS on the main thread until the window closes (a GUI-loop
+    requirement on macOS especially), so the caller must already have the
+    harness running in a background thread.
+
+    Returns True if a native window was shown; False if pywebview / its backend
+    is unavailable, so the caller can fall back to webbrowser.open().
+    """
+    try:
+        import webview  # pywebview
+    except Exception as e:
+        log.info("pywebview unavailable (%s); using system browser.", e)
+        return False
+
+    # Wait for Tower to answer before painting the window (avoids a blank/err
+    # frame). Reuse the same readiness probe semantics as the browser path.
+    import urllib.request
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(url, timeout=1.5)
+            break
+        except Exception:
+            time.sleep(0.4)
+
+    try:
+        webview.create_window(
+            "Aedelgard",
+            url,
+            width=1100, height=820,
+            min_size=(620, 560),
+            text_select=True,
+        )
+        # gui=None lets pywebview auto-pick the best backend per OS. icon is
+        # honoured on the GTK/Qt (Linux) backends; Windows/mac take it from the
+        # bundled exe/.app icon, which we set in packaging.
+        start_kwargs = {}
+        if icon_path and icon_path.exists():
+            start_kwargs["icon"] = str(icon_path)
+        webview.start(**start_kwargs)   # BLOCKS until the window is closed
+        return True
+    except Exception as e:
+        log.warning("Native window failed (%s); falling back to browser.", e)
+        return False
+
+
 def _port_in_use(port: int) -> bool:
     """True if something is LISTENING on 127.0.0.1:<port>."""
     import socket
@@ -257,15 +308,38 @@ def main() -> None:
     log.info("Aedelgard body data dir: %s", data_dir)
     log.info("Opening %s", url)
 
-    threading.Thread(target=open_browser_when_ready, args=(url,), daemon=True).start()
-
-    # Hand off to the existing harness entry point. main.py already supports
-    # Tower-only mode when no DISCORD_BOT_TOKEN is set — exactly the body case.
+    # Import + run the existing harness entry point. main.py supports Tower-only
+    # mode when no DISCORD_BOT_TOKEN is set — exactly the body case.
     res_root = resource_root()
     if str(res_root) not in sys.path:
         sys.path.insert(0, str(res_root))
     import main as harness_main  # noqa: E402  (repo root main.py)
-    harness_main.main()
+
+    # The app-feeling path: wrap the localhost UI in a NATIVE window via
+    # pywebview. Because webview.start() must own the MAIN thread (a hard GUI
+    # requirement on macOS), we run the harness server in a BACKGROUND thread
+    # and let the window block the main thread. When the window closes, the
+    # process exits (daemon server thread dies with it) — closing the window
+    # quits the app, as users expect.
+    icon_master = res_root / "packaging" / "common" / "icon_render" / "aedelgard.png"
+
+    server = threading.Thread(target=harness_main.main, daemon=True)
+    server.start()
+
+    shown = open_native_window(url, icon_path=icon_master)
+    if shown:
+        return  # window closed -> quit the body
+
+    # Fallback: no native webview available. Open the system browser and keep
+    # the server in the FOREGROUND so the process stays alive (the server thread
+    # is a daemon and would otherwise die when main() returns).
+    log.info("Native window unavailable; opening the system browser instead.")
+    threading.Thread(target=open_browser_when_ready, args=(url,), daemon=True).start()
+    try:
+        while server.is_alive():
+            server.join(timeout=1.0)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

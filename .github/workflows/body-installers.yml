@@ -43,6 +43,18 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # Native app-window backend (pywebview). Enabled on Windows + macOS, where
+      # the OS webview is built-in and PyInstaller-bundles cleanly:
+      #   * Windows -> Edge WebView2 (present on Win10/11) via pythonnet
+      #   * macOS   -> WebKit via pyobjc
+      # Linux is intentionally SKIPPED: it needs system GTK/WebKit2GTK + PyGObject
+      # which is fiddly to bundle into an AppImage, and the launcher gracefully
+      # falls back to the system browser when `import webview` fails. The AppImage
+      # is our proof-of-mechanism artifact, not the primary user target.
+      - name: Install native-window backend (Windows/macOS)
+        if: runner.os != 'Linux'
+        run: pip install pywebview
+
       # The 167MB ONNX embedding model is fetched once per build so the bundle
       # is offline-first. (Vendoring it in-repo would bloat git; CI seeds it.)
       - name: Fetch embedding model (all-MiniLM-L6-v2)
