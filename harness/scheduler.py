@@ -25,7 +25,15 @@ from zoneinfo import ZoneInfo
 
 log = logging.getLogger("galadriel.scheduler")
 
-CET = ZoneInfo("Europe/Stockholm")
+try:
+    CET = ZoneInfo("Europe/Stockholm")
+except Exception:
+    # Windows/minimal builds may lack the IANA tz db (no `tzdata`).
+    # Degrade to UTC rather than crash the whole launch; schedule times
+    # are still honoured, just anchored to UTC.
+    from datetime import timezone
+    log.warning("Europe/Stockholm tz unavailable; falling back to UTC")
+    CET = timezone.utc
 
 # Morning: 09:10 CET on workdays (Mon-Fri)
 MORNING_TIME = time(9, 10)

@@ -29,7 +29,7 @@ if os.path.isdir(_onnx):
 # mempalace + chromadb pull a lot in dynamically; collect generously.
 hiddenimports = []
 for pkg in ("mempalace", "chromadb", "anthropic", "flask", "dotenv",
-            "google.generativeai", "discord"):
+            "google.generativeai", "discord", "tzdata"):
     try:
         hiddenimports += collect_submodules(pkg)
     except Exception:
@@ -39,6 +39,12 @@ for pkg in ("chromadb", "mempalace"):
         datas += collect_data_files(pkg)
     except Exception:
         pass
+# tzdata ships the IANA zoneinfo database as package data — required on Windows,
+# which has no system tz db, so ZoneInfo("Europe/Stockholm") can resolve.
+try:
+    datas += collect_data_files("tzdata")
+except Exception:
+    pass
 
 a = Analysis(
     [os.path.join(ROOT, "packaging", "common", "body_launch.py")],
