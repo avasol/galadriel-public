@@ -50,6 +50,25 @@ def _palace_path() -> str:
     return os.environ.get("MEMPALACE_PATH", DEFAULT_PALACE_PATH)
 
 
+def _kg_path() -> str | None:
+    """SQLite path for the knowledge graph.
+
+    mempalace's KnowledgeGraph defaults to ~/.mempalace/knowledge_graph.sqlite3
+    and honours NO env var, so on the native body (where MEMPALACE_PATH is
+    redirected to the per-OS user data dir) the KG would otherwise land in the
+    user's HOME — split from the drawers and outside the mind that gets backed
+    up / relocated. We co-locate the KG sqlite BESIDE the palace dir so the
+    whole mind lives in one place. Returns None to accept mempalace's own
+    default when MEMPALACE_PATH is unset (preserves prior behaviour on the
+    always-on host).
+    """
+    mp = os.environ.get("MEMPALACE_PATH")
+    if not mp:
+        return None
+    # MEMPALACE_PATH points at <data>/palace; put the KG next to it as a sibling.
+    return str(Path(mp).parent / "knowledge_graph.sqlite3")
+
+
 def _archive_root() -> Path:
     return Path(os.environ.get("PALACE_ARCHIVE_ROOT", DEFAULT_ARCHIVE_ROOT))
 
@@ -479,7 +498,7 @@ def kg_add(
         return "[kg add] subject, predicate, and object are required."
     try:
         from mempalace.knowledge_graph import KnowledgeGraph
-        kg = KnowledgeGraph()
+        kg = KnowledgeGraph(db_path=_kg_path())
         kg.add_triple(
             subject=str(subject),
             predicate=str(predicate),
@@ -522,7 +541,7 @@ def kg_query(
         return "[kg query] give at least one of subject, predicate, object."
     try:
         from mempalace.knowledge_graph import KnowledgeGraph
-        kg = KnowledgeGraph()
+        kg = KnowledgeGraph(db_path=_kg_path())
         if subject:
             rows = kg.query_entity(name=subject, direction="outgoing") or []
         elif object:
@@ -558,7 +577,7 @@ def kg_invalidate(subject: str, predicate: str, object: str, ended: str | None =
     """Mark a KG fact as no longer valid (sets valid_to date)."""
     try:
         from mempalace.knowledge_graph import KnowledgeGraph
-        kg = KnowledgeGraph()
+        kg = KnowledgeGraph(db_path=_kg_path())
         kg.invalidate(subject=str(subject), predicate=str(predicate), obj=str(object), ended=ended)
         return f"KG: invalidated `{subject}` --[{predicate}]-> `{object}`"
     except Exception as e:
@@ -569,7 +588,7 @@ def kg_timeline(entity: str) -> str:
     """Return chronological history of all facts touching an entity."""
     try:
         from mempalace.knowledge_graph import KnowledgeGraph
-        kg = KnowledgeGraph()
+        kg = KnowledgeGraph(db_path=_kg_path())
         facts = kg.timeline(entity_name=entity) or []
     except Exception as e:
         return f"[kg timeline] {type(e).__name__}: {e}"

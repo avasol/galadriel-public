@@ -108,15 +108,36 @@ def prepare_environment() -> Path:
 
 
 def is_first_run(data_dir: Path) -> bool:
-    """First run = no .env with a usable brain credential yet."""
+    """First run = no .env with a usable brain credential yet.
+
+    The credential markers MUST match exactly what tower/app.py::api_setup
+    writes for each provider, or a successful /setup loops back to /setup:
+      - anthropic -> ANTHROPIC_API_KEY=sk-...
+      - gemini    -> GEMINI_API_KEY=...
+      - aedelgard -> AEDELGARD_AEDK=aedk... (the ONE key; device tokens are
+                     minted from it at runtime, never written to .env)
+    """
     env_path = data_dir / ".env"
     if not env_path.exists():
         return True
-    text = env_path.read_text(encoding="utf-8", errors="ignore")
-    # Any of the brain credentials present and non-placeholder counts as set-up.
-    markers = ("ANTHROPIC_API_KEY=sk-", "GEMINI_API_KEY=", "AEDELGARD_DEVICE_TOKEN=")
-    return not any(m in text and not text.split(m, 1)[1].lstrip().startswith(("\n", "."))
-                   for m in markers)
+    set_up = False
+    for raw in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key, val = key.strip(), val.strip()
+        if not val or val.startswith((".", "<")):  # empty / placeholder
+            continue
+        if key == "ANTHROPIC_API_KEY" and val.startswith("sk-"):
+            set_up = True
+        elif key == "GEMINI_API_KEY":
+            set_up = True
+        elif key == "AEDELGARD_AEDK" and val.startswith("aedk"):
+            set_up = True
+        elif key == "AEDELGARD_DEVICE_TOKEN":  # legacy/back-compat
+            set_up = True
+    return not set_up
 
 
 # ── 4. Open the browser once Tower answers ────────────────────────────────────
