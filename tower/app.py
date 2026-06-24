@@ -20,6 +20,13 @@ def create_tower(agent, scheduler=None) -> Flask:
     )
     app.secret_key = os.environ.get("TOWER_SECRET_KEY", "change-me")
 
+    @app.route("/healthz")
+    def healthz():
+        # Identity probe for the native body's single-instance guard: lets a
+        # second launch confirm the listener on the port is genuinely an
+        # Aedelgard body (not a stranger app) before bowing out.
+        return jsonify({"status": "ok", "service": "aedelgard-body"})
+
     @app.route("/")
     def index():
         # Setup-only Tower (native body, keyless first run): no agent yet.
@@ -259,7 +266,7 @@ def create_tower(agent, scheduler=None) -> Flask:
             # so the body keeps thinking past the ~1h token TTL. No device-token
             # paste, no expiry surprise — "paste your key once" made true.
             aedk = (data.get("aedelgard_aedk") or data.get("aedelgard_key") or "").strip()
-            broker = (data.get("aedelgard_broker_url") or "https://api.aedelgard.com").strip()
+            broker = (data.get("aedelgard_broker_url") or "https://hq.aedelgard.com").strip()
             if not aedk:
                 return jsonify({"error": "Paste your Aedelgard key (aedk…)."}), 400
             lines.append(f"AEDELGARD_BROKER_URL={broker}")

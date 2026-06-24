@@ -133,7 +133,7 @@ class AedelgardProvider:
 
     Config (env), two ways:
       Preferred (true one-key):
-        AEDELGARD_BROKER_URL  — broker base, e.g. https://api.aedelgard.com
+        AEDELGARD_BROKER_URL  — broker base, e.g. https://hq.aedelgard.com
         AEDELGARD_AEDK        — the registration key (aedk…); provider self-mints
         AEDELGARD_DEVICE_FINGERPRINT — optional; a stable per-install fingerprint
                                        is derived + persisted if unset

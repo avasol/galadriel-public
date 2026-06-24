@@ -157,47 +157,102 @@ def open_browser_when_ready(url: str, timeout: float = 30.0) -> None:
         log.info("Open your browser to %s", url)
 
 
-def _another_body_is_running(port: int) -> bool:
-    """True if something already holds the Tower port on localhost.
-
-    The body is a single localhost web app. Launching a second copy would race
-    on the port: main.py runs Tower in a daemon thread, so an EADDRINUSE there
-    is swallowed and you get a silent, non-serving zombie process (observed in
-    the wild as multiple idle aedelgard-body processes). We pre-flight the port
-    here: if it is already served, a body is up — open the browser to it and
-    exit cleanly instead of spawning a duplicate.
-    """
+def _port_in_use(port: int) -> bool:
+    """True if something is LISTENING on 127.0.0.1:<port>."""
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
-        # connect_ex == 0 means something is LISTENING (a live body), so we bow out.
         return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _is_our_body(port: int) -> bool:
+    """True if the listener on <port> is an Aedelgard body, not a stranger.
+
+    The single-instance guard must not mistake an unrelated app on 8080 (a dev
+    server, another tool) for our own body — opening the browser to a stranger
+    would be wrong, and silently failing to bind would leave a zombie. The Tower
+    serves /healthz with an identifying marker; we probe it briefly.
+    """
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=1.0) as r:
+            body = r.read(256).decode("utf-8", "ignore").lower()
+            return "aedelgard" in body or "galadriel" in body or "ok" in body
+    except Exception:
+        return False
+
+
+def _first_free_port(start: int, tries: int = 20) -> int:
+    """Return the first free port at or after <start> (cap the search)."""
+    for p in range(start, start + tries):
+        if not _port_in_use(p):
+            return p
+    return start  # give up; let the bind error surface loudly
+
+
+def _resolve_port() -> int:
+    """Decide which port the body should serve on.
+
+    Precedence: --port CLI arg > TOWER_PORT env/.env > 8080 default. Then:
+      - if our OWN body already serves the chosen port -> caller will surface it
+        (single-instance);
+      - if a STRANGER holds it -> auto-fallback to the next free port and tell
+        the user (so we never silently fail to bind into a zombie);
+      - free -> use it.
+    Returns the resolved port; sets os.environ["TOWER_PORT"] so the harness
+    binds the same one.
+    """
+    chosen = None
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--port" and i + 1 < len(argv):
+            chosen = argv[i + 1]
+        elif a.startswith("--port="):
+            chosen = a.split("=", 1)[1]
+    if chosen is None:
+        chosen = os.environ.get("TOWER_PORT", "8080")
+    try:
+        port = int(chosen)
+    except (TypeError, ValueError):
+        log.warning("Invalid port %r; falling back to 8080.", chosen)
+        port = 8080
+
+    if _port_in_use(port) and not _is_our_body(port):
+        free = _first_free_port(port + 1)
+        log.warning(
+            "Port %s is in use by another application. Aedelgard will use port %s "
+            "instead. To pin a port, set TOWER_PORT in your .env or launch with "
+            "--port <number>.", port, free)
+        port = free
+
+    os.environ["TOWER_PORT"] = str(port)
+    return port
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
                         datefmt="%H:%M:%S")
+
+    # Resolve the port BEFORE preparing the env, so the harness binds what we
+    # chose (and so a stranger on 8080 triggers a clean fallback, not a zombie).
+    port = _resolve_port()
+
     data_dir = prepare_environment()
 
-    port = os.environ.get("TOWER_PORT", "8080")
     landing = "/setup" if is_first_run(data_dir) else "/"
     url = f"http://127.0.0.1:{port}{landing}"
 
-    # Single-instance guard: if a body is already serving this port, surface it
-    # and exit rather than spawning a duplicate (which would silently fail to
-    # bind and linger as a zombie).
-    try:
-        if _another_body_is_running(int(port)):
-            log.info("A body is already running on port %s — opening it instead of starting a second.", port)
-            try:
-                webbrowser.open(f"http://127.0.0.1:{port}/")
-            except Exception:
-                pass
-            return
-    except Exception:
-        # Never let the guard itself block a legitimate launch.
-        pass
+    # Single-instance guard: if OUR OWN body already serves this port, surface
+    # it and exit rather than spawning a duplicate (which would otherwise fail
+    # to bind in a daemon thread and linger as a zombie).
+    if _port_in_use(port) and _is_our_body(port):
+        log.info("An Aedelgard body is already running on port %s — opening it.", port)
+        try:
+            webbrowser.open(f"http://127.0.0.1:{port}/")
+        except Exception:
+            pass
+        return
 
     log.info("Aedelgard body data dir: %s", data_dir)
     log.info("Opening %s", url)
