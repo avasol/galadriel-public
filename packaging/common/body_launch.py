@@ -402,14 +402,27 @@ def main() -> None:
                 server.join(timeout=1.0)
         return
 
-    # Server is up. Try the native window; on ANY failure fall back to browser
-    # and keep the process alive on the (daemon) server thread.
+    # Server is up. On Windows the native pywebview/WebView2 window can hard-
+    # ABORT the process (not a catchable Python exception) when the WebView2
+    # runtime can't paint — the body then 'vanishes' after serving GET / 200,
+    # with no fallback line ever logged (confirmed from Lord Isildur's body.log,
+    # 2026-06-24). Since the harness + Tower are provably healthy, the reliable
+    # surface is the system browser. So: DEFAULT to the browser on Windows, and
+    # only attempt the native window when explicitly opted in. mac/Linux keep
+    # the native window (their WebKit/GTK backends are reliable here).
+    native_optin = os.environ.get("AEDELGARD_NATIVE_WINDOW") == "1"
+    try_native = native_optin if os.name == "nt" else True
+
     shown = False
-    try:
-        shown = open_native_window(url, icon_path=icon_master)
-    except Exception as e:
-        log.warning("Native window raised (%s); using system browser.", e)
-        shown = False
+    if try_native:
+        try:
+            shown = open_native_window(url, icon_path=icon_master)
+        except Exception as e:
+            log.warning("Native window raised (%s); using system browser.", e)
+            shown = False
+    else:
+        log.info("Windows: opening Aedelgard in your default browser "
+                 "(set AEDELGARD_NATIVE_WINDOW=1 to try the native window).")
 
     if shown:
         return  # window closed -> quit the body
