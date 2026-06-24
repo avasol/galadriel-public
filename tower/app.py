@@ -70,7 +70,7 @@ def create_tower(agent, scheduler=None) -> Flask:
             )
             try:
                 response = future.result(timeout=120)  # 2 min timeout
-                return jsonify({"response": response})
+                return jsonify({"response": response, "usage": getattr(agent, "last_usage", {}) or {}})
             except Exception as e:
                 log.exception("Tower chat error")
                 return jsonify({"error": str(e)}), 500
@@ -81,7 +81,7 @@ def create_tower(agent, scheduler=None) -> Flask:
                 response = loop.run_until_complete(
                     agent.respond(message, channel_id="tower")
                 )
-                return jsonify({"response": response})
+                return jsonify({"response": response, "usage": getattr(agent, "last_usage", {}) or {}})
             except Exception as e:
                 log.exception("Tower chat error")
                 return jsonify({"error": str(e)}), 500
@@ -148,6 +148,21 @@ def create_tower(agent, scheduler=None) -> Flask:
         except Exception:
             count = 0
         return jsonify({"count": count, "has_dreams": count > 0})
+
+    # ── Cache usage (real, from the agent's last API call) ───────
+    @app.route("/api/usage", methods=["GET"])
+    def api_usage():
+        """The REAL token usage from the agent's most recent completion —
+        {input, cache_read, cache_write, output}. Drives the cache & context
+        panel honestly: no fabricated numbers, only what the model billed."""
+        u = getattr(agent, "last_usage", {}) or {}
+        return jsonify({
+            "input": u.get("input", 0),
+            "cache_read": u.get("cache_read", 0),
+            "cache_write": u.get("cache_write", 0),
+            "output": u.get("output", 0),
+            "model": getattr(agent, "model", ""),
+        })
 
     # ── Vision API ───────────────────────────────────────────────
 

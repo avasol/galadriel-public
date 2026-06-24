@@ -92,6 +92,11 @@ def prepare_environment() -> Path:
     # the body owns this decision regardless of a stale .env value.
     os.environ["TOWER_HOST"] = "127.0.0.1"
     os.environ.setdefault("TOWER_PORT", "8080")
+    # Prefer the native, labelled "Aedelgard" window by default. It is SAFE now:
+    # the launcher pre-flights the WebView2 runtime (Windows) and falls back to
+    # the system browser automatically if it is missing — no more hard-aborts.
+    # Set AEDELGARD_NATIVE_WINDOW=0 to force the browser.
+    os.environ.setdefault("AEDELGARD_NATIVE_WINDOW", "1")
     # The body's mind lives in the user data dir, not next to the binary.
     os.environ.setdefault("GALADRIEL_CONFIG_DIR", str(data_dir / "config"))
     os.environ.setdefault("GALADRIEL_MEMORY_DIR", str(data_dir / "memory"))
@@ -173,6 +178,36 @@ def _wait_for_server(url: str, timeout: float = 30.0) -> bool:
         except Exception:
             time.sleep(0.4)
     return False
+
+
+def _webview2_runtime_present() -> bool:
+    """Detect whether the Edge WebView2 Runtime is actually INSTALLED. pywebview's
+    Windows backend hard-ABORTS the process (not a catchable exception) when the
+    runtime is missing — so we must check BEFORE calling webview.start(). The
+    runtime registers its version under these keys (per Microsoft's documented
+    detection method). Empty/absent pv => not installed."""
+    if os.name != "nt":
+        return True  # mac/Linux use their own reliable backends
+    try:
+        import winreg
+        keys = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+            (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+        ]
+        for hive, path in keys:
+            try:
+                with winreg.OpenKey(hive, path) as k:
+                    pv, _ = winreg.QueryValueEx(k, "pv")
+                    if pv and pv != "0.0.0.0":
+                        return True
+            except FileNotFoundError:
+                continue
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
 
 
 def open_native_window(url: str, icon_path: "Path | None" = None) -> bool:
@@ -425,7 +460,7 @@ def main() -> None:
 
     data_dir = prepare_environment()
 
-    landing = "/setup" if is_first_run(data_dir) else "/"
+    landing = "/setup" if is_first_run(data_dir) else "/chat"
     url = f"http://127.0.0.1:{port}{landing}"
 
     # Single-instance guard: if OUR OWN body already serves this port, surface
@@ -434,7 +469,7 @@ def main() -> None:
     if _port_in_use(port) and _is_our_body(port):
         log.info("An Aedelgard body is already running on port %s — opening it.", port)
         try:
-            webbrowser.open(f"http://127.0.0.1:{port}/")
+            webbrowser.open(f"http://127.0.0.1:{port}/chat")
         except Exception:
             pass
         return
@@ -503,8 +538,19 @@ def main() -> None:
     # surface is the system browser. So: DEFAULT to the browser on Windows, and
     # only attempt the native window when explicitly opted in. mac/Linux keep
     # the native window (their WebKit/GTK backends are reliable here).
+    # On Windows, only attempt the native window when (a) the user opted in AND
+    # (b) the WebView2 runtime is actually installed — otherwise the backend
+    # hard-aborts. With the runtime present + opt-in, the labelled "Aedelgard"
+    # window is safe. Without opt-in, or without the runtime, use the browser.
     native_optin = os.environ.get("AEDELGARD_NATIVE_WINDOW") == "1"
-    try_native = native_optin if os.name == "nt" else True
+    if os.name == "nt":
+        try_native = native_optin and _webview2_runtime_present()
+        if native_optin and not try_native:
+            log.info("Native window requested but WebView2 runtime not detected; "
+                     "opening the browser instead (install the runtime, or the "
+                     "MSI will bundle it).")
+    else:
+        try_native = True
 
     shown = False
     if try_native:
