@@ -27,8 +27,12 @@
       Scope="perMachine"
       Compressed="yes">
 
-    <!-- Block downgrades, auto-remove older versions on upgrade. -->
+    <!-- Block downgrades, auto-remove older versions on upgrade. Schedule the
+         removal of the prior version AFTER InstallInitialize so the old files
+         are gone before the new ones land (cleaner than the default late
+         removal, and avoids file-in-use churn on the shared exe). -->
     <MajorUpgrade
+        Schedule="afterInstallInitialize"
         DowngradeErrorMessage="A newer version of Aedelgard Body is already installed." />
 
     <MediaTemplate EmbedCab="yes" />
@@ -43,6 +47,21 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Aedelgard" />
     </StandardDirectory>
+
+    <!-- Reinstall-over-running guard: if the body is already running (it holds
+         port 8080 and locks aedelgard-body.exe), the file-copy phase would hit
+         'Files in Use' and prompt for a reboot or roll back. CloseApplication
+         finds the running process by exe name and ends it BEFORE costing, so a
+         clean reinstall just works. CloseCount/Timeout: try a graceful close,
+         then terminate. RebootPrompt=no: never ask the user to reboot for this. -->
+    <util:CloseApplication
+        Id="CloseRunningBody"
+        Target="aedelgard-body.exe"
+        CloseMessage="yes"
+        Timeout="10"
+        TerminateProcess="1"
+        RebootPrompt="no"
+        EndSessionMessage="yes" />
 
     <!-- Start Menu folder + shortcut. -->
     <StandardDirectory Id="ProgramMenuFolder">
