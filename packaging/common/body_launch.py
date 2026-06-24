@@ -97,10 +97,13 @@ def prepare_environment() -> Path:
     os.environ.setdefault("GALADRIEL_MEMORY_DIR", str(data_dir / "memory"))
     os.environ.setdefault("MEMPALACE_PATH", str(data_dir / "palace"))
     os.environ.setdefault("PALACE_ARCHIVE_ROOT", str(data_dir / "archive"))
+    # Prompt-debug dumps default to a CWD-relative "debug/" — read-only under
+    # Program Files (WinError 5). Point it at the writable data dir.
+    os.environ.setdefault("GALADRIEL_DEBUG_DIR", str(data_dir / "debug"))
     # The .env the /setup screen writes lives in the user data dir.
     os.environ.setdefault("GALADRIEL_DOTENV", str(data_dir / ".env"))
 
-    for sub in ("config", "memory", "palace", "archive"):
+    for sub in ("config", "memory", "palace", "archive", "debug"):
         (data_dir / sub).mkdir(parents=True, exist_ok=True)
 
     seed_embedding_model(data_dir, res_root)
@@ -216,8 +219,22 @@ def open_native_window(url: str, icon_path: "Path | None" = None) -> bool:
         start_kwargs = {}
         if icon_path and icon_path.exists():
             start_kwargs["icon"] = str(icon_path)
-        webview.start(**start_kwargs)   # BLOCKS until the window is closed
-        return True
+        # webview.start() BLOCKS until the window is closed — UNLESS the backend
+        # failed to truly paint (a very common WebView2 failure mode on Windows
+        # where the window flashes and the GUI loop exits in milliseconds). In
+        # that case start() returns almost instantly. We measure the block time:
+        # a near-instant return means the window never really opened, so we treat
+        # it as a failure and fall back to the browser instead of quitting the
+        # whole body (the silent "opens then vanishes" symptom).
+        t0 = time.time()
+        webview.start(**start_kwargs)
+        elapsed = time.time() - t0
+        if elapsed < 3.0:
+            log.warning(
+                "Native window closed in %.1fs — the WebView2 backend likely "
+                "failed to render. Falling back to the system browser.", elapsed)
+            return False
+        return True  # window was genuinely open and the user closed it
     except Exception as e:
         log.warning("Native window failed (%s); falling back to browser.", e)
         return False

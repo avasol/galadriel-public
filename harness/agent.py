@@ -191,7 +191,10 @@ def _dump_prompt_to_file(memory: "MemoryManager", tools: list, debug_dir: str = 
       - Tracking changes over time
     """
     try:
-        debug_path = Path(debug_dir)
+        # Honour an explicit debug dir (the native body points this at its
+        # writable data dir; the default "debug" assumes a writable CWD, which
+        # is false for an installed app under Program Files -> WinError 5).
+        debug_path = Path(os.environ.get("GALADRIEL_DEBUG_DIR") or debug_dir)
         prompts_path = debug_path / "prompts"
         prompts_path.mkdir(parents=True, exist_ok=True)
 
