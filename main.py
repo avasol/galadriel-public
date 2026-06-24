@@ -31,7 +31,15 @@ def start_tower(agent, scheduler):
     host = os.environ.get("TOWER_HOST", "0.0.0.0")
     port = int(os.environ.get("TOWER_PORT", "8080"))
     log.info(f"Tower UI starting on http://{host}:{port}")
-    app.run(host=host, port=port, use_reloader=False)
+    try:
+        app.run(host=host, port=port, use_reloader=False)
+    except OSError as e:
+        # Port already in use (e.g. a second body / stale instance). This runs
+        # in a daemon thread, so log loudly — a swallowed bind error here is how
+        # a non-serving zombie process is born.
+        log.error("Tower failed to bind %s:%s (%s). Is another instance running?",
+                  host, port, e)
+        raise
 
 
 def main():

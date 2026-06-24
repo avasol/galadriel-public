@@ -157,6 +157,23 @@ def open_browser_when_ready(url: str, timeout: float = 30.0) -> None:
         log.info("Open your browser to %s", url)
 
 
+def _another_body_is_running(port: int) -> bool:
+    """True if something already holds the Tower port on localhost.
+
+    The body is a single localhost web app. Launching a second copy would race
+    on the port: main.py runs Tower in a daemon thread, so an EADDRINUSE there
+    is swallowed and you get a silent, non-serving zombie process (observed in
+    the wild as multiple idle aedelgard-body processes). We pre-flight the port
+    here: if it is already served, a body is up — open the browser to it and
+    exit cleanly instead of spawning a duplicate.
+    """
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        # connect_ex == 0 means something is LISTENING (a live body), so we bow out.
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -166,6 +183,21 @@ def main() -> None:
     port = os.environ.get("TOWER_PORT", "8080")
     landing = "/setup" if is_first_run(data_dir) else "/"
     url = f"http://127.0.0.1:{port}{landing}"
+
+    # Single-instance guard: if a body is already serving this port, surface it
+    # and exit rather than spawning a duplicate (which would silently fail to
+    # bind and linger as a zombie).
+    try:
+        if _another_body_is_running(int(port)):
+            log.info("A body is already running on port %s — opening it instead of starting a second.", port)
+            try:
+                webbrowser.open(f"http://127.0.0.1:{port}/")
+            except Exception:
+                pass
+            return
+    except Exception:
+        # Never let the guard itself block a legitimate launch.
+        pass
 
     log.info("Aedelgard body data dir: %s", data_dir)
     log.info("Opening %s", url)
