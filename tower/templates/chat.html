@@ -3,14 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mirror of Galadriel — Chat</title>
+    <!-- AEDELGARD-BRAND: body's local chat UI. Branded for the Aedelgard product
+         (the body is the product). Galadriel remains the name of the open engine
+         and of the harness's own agent identity — not of this shipped shell.
+         When the hard fork (B) lands, this whole template lifts out cleanly. -->
+    <title>Aedelgard</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="container chat-container">
         <header>
-            <h1>The Mirror of Galadriel</h1>
-            <p class="subtitle">Direct channel to the agent</p>
+            <h1>Aedelgard</h1>
+            <p class="subtitle">Your mind, running on your own machine.</p>
             <div class="header-actions">
                 <a href="/" class="btn btn-small">Tower</a>
                 <button onclick="clearChat()" class="btn btn-small btn-danger">Clear History</button>
@@ -23,7 +27,7 @@
             <textarea
                 id="chat-input"
                 class="chat-input"
-                placeholder="Speak, my lord..."
+                placeholder="Speak your mind…"
                 rows="2"
                 onkeydown="handleKey(event)"
             ></textarea>
@@ -35,6 +39,10 @@
     const chatLog = document.getElementById('chat-log');
     const chatInput = document.getElementById('chat-input');
     const sendBtn = document.getElementById('send-btn');
+
+    // The assistant's display label. The product shell speaks as "Aedelgard";
+    // when the soul-name is plumbed through (post-fork), this becomes dynamic.
+    const ASSISTANT_LABEL = 'Aedelgard';
 
     // Load existing history on page load
     (async () => {
@@ -49,7 +57,7 @@
     function appendMessage(role, text) {
         const div = document.createElement('div');
         div.className = `msg msg-${role}`;
-        const label = role === 'user' ? 'You' : 'Galadriel';
+        const label = role === 'user' ? 'You' : ASSISTANT_LABEL;
         div.innerHTML = `<strong>${label}</strong><div class="msg-text">${escapeHtml(text)}</div>`;
         chatLog.appendChild(div);
     }
