@@ -240,7 +240,12 @@
         $scroll.scrollTop=$scroll.scrollHeight; $send.disabled=false; setLive(false); refresh();
       })
       .catch(function(err){
-        bodyEl.innerHTML='<p style="color:#d98a8a">&#9888; '+esc(err.message)+'</p>';
+        // A bare "Failed to fetch" means the connection dropped — almost always
+        // the mind ran past the server window on a heavy turn, not a true fault.
+        var msg = /failed to fetch|load failed|networkerror/i.test(err.message||'')
+          ? 'The connection dropped while the mind was thinking \u2014 a heavy turn can outrun the wait. It may still be finishing; give it a moment, then ask again (or shorten the message).'
+          : err.message;
+        bodyEl.innerHTML='<p style="color:#d98a8a">&#9888; '+esc(msg)+'</p>';
         $send.disabled=false; setLive(false); refresh();
       });
   }

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
+from concurrent.futures import TimeoutError as FuturesTimeout
 from flask import Flask, render_template, request, jsonify
 
 log = logging.getLogger("galadriel.tower")
@@ -69,8 +70,17 @@ def create_tower(agent, scheduler=None) -> Flask:
                 scheduler._loop,
             )
             try:
-                response = future.result(timeout=120)  # 2 min timeout
+                # 5 min: a heavy first turn (long letter + full memory/palace load
+                # on a fresh body) can legitimately exceed 2 min on a big model.
+                response = future.result(timeout=300)
                 return jsonify({"response": response, "usage": getattr(agent, "last_usage", {}) or {}})
+            except FuturesTimeout:
+                # Don't drop the connection (-> browser 'Failed to fetch'); the
+                # mind is still thinking. Tell the user honestly so they can wait
+                # and retry rather than see a cryptic fetch error.
+                log.warning("Tower chat: agent exceeded 300s on this turn")
+                future.cancel()
+                return jsonify({"error": "The mind is taking longer than usual on this one — it may still be thinking. Give it a moment and try again, or shorten the message."}), 504
             except Exception as e:
                 log.exception("Tower chat error")
                 return jsonify({"error": str(e)}), 500
