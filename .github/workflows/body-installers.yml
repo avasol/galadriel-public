@@ -53,7 +53,13 @@ jobs:
       # is our proof-of-mechanism artifact, not the primary user target.
       - name: Install native-window backend (Windows/macOS)
         if: runner.os != 'Linux'
-        run: pip install pywebview
+        shell: bash
+        run: |
+          pip install pywebview
+          # Windows: pywebview's EdgeChromium (WebView2) backend imports `clr`
+          # from pythonnet at runtime. Without it, webview.start() fails and the
+          # windowed (console=False) app dies silently. Install it explicitly.
+          if [ "$RUNNER_OS" = "Windows" ]; then pip install pythonnet; fi
 
       # The 167MB ONNX embedding model is fetched once per build so the bundle
       # is offline-first. (Vendoring it in-repo would bloat git; CI seeds it.)

@@ -157,6 +157,21 @@ def open_browser_when_ready(url: str, timeout: float = 30.0) -> None:
         log.info("Open your browser to %s", url)
 
 
+def _wait_for_server(url: str, timeout: float = 30.0) -> bool:
+    """Block until the local harness answers <url>, or timeout. Returns True if
+    it came up. Used to distinguish 'server still starting' from 'server died'
+    so a crashed harness produces a clear log line, not a silent dead window."""
+    import urllib.request
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(url, timeout=1.5)
+            return True
+        except Exception:
+            time.sleep(0.4)
+    return False
+
+
 def open_native_window(url: str, icon_path: "Path | None" = None) -> bool:
     """Open the chat UI in a NATIVE app window (not the system browser).
 
@@ -280,10 +295,33 @@ def _resolve_port() -> int:
     return port
 
 
+def _setup_file_logging() -> "Path | None":
+    """Tee logs to a file in the user data dir so a windowed (console=False)
+    build NEVER dies silently. The single most important diagnostic: when the
+    app vanishes in 1-2s, the reason is written to <data_dir>/body.log."""
+    try:
+        ddir = user_data_dir()
+        log_path = ddir / "body.log"
+        handlers = [logging.FileHandler(log_path, encoding="utf-8")]
+        # Keep a console handler too where one exists (non-Windows / shell launch).
+        if sys.stderr is not None:
+            handlers.append(logging.StreamHandler(sys.stderr))
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+            datefmt="%H:%M:%S",
+            handlers=handlers,
+            force=True,
+        )
+        return log_path
+    except Exception:
+        logging.basicConfig(level=logging.INFO)
+        return None
+
+
 def main() -> None:
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-                        datefmt="%H:%M:%S")
+    log_path = _setup_file_logging()
+    log.info("Aedelgard body launching (log: %s)", log_path)
 
     # Resolve the port BEFORE preparing the env, so the harness binds what we
     # chose (and so a stranger on 8080 triggers a clean fallback, not a zombie).
@@ -326,15 +364,44 @@ def main() -> None:
     server = threading.Thread(target=harness_main.main, daemon=True)
     server.start()
 
-    shown = open_native_window(url, icon_path=icon_master)
+    # Confirm the harness server actually came UP before we try anything. If the
+    # harness thread crashed (bad credential, missing dep), the window would
+    # otherwise paint a dead frame or pywebview would fail confusingly. Probe
+    # first; if it never answers, the harness died — say so loudly (the reason
+    # is in body.log) and open the browser to the URL anyway so the user isn't
+    # staring at a vanished process.
+    if not _wait_for_server(url, timeout=30.0):
+        log.error(
+            "Harness did not start within 30s — see body.log for the cause. "
+            "The app window cannot open without it.")
+        # Still try the browser so a transient slow start isn't a dead end.
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+        # Keep the process alive briefly so any late server log flushes.
+        for _ in range(10):
+            if server.is_alive():
+                server.join(timeout=1.0)
+        return
+
+    # Server is up. Try the native window; on ANY failure fall back to browser
+    # and keep the process alive on the (daemon) server thread.
+    shown = False
+    try:
+        shown = open_native_window(url, icon_path=icon_master)
+    except Exception as e:
+        log.warning("Native window raised (%s); using system browser.", e)
+        shown = False
+
     if shown:
         return  # window closed -> quit the body
 
-    # Fallback: no native webview available. Open the system browser and keep
-    # the server in the FOREGROUND so the process stays alive (the server thread
-    # is a daemon and would otherwise die when main() returns).
     log.info("Native window unavailable; opening the system browser instead.")
-    threading.Thread(target=open_browser_when_ready, args=(url,), daemon=True).start()
+    try:
+        webbrowser.open(url)
+    except Exception:
+        log.info("Open your browser to %s", url)
     try:
         while server.is_alive():
             server.join(timeout=1.0)
@@ -343,4 +410,18 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Last-resort: a windowed build has no console, so an uncaught exception
+        # would vanish (the 1-2s silent death). Write the traceback where the
+        # user — and we — can find it, then surface a hint via the browser.
+        import traceback
+        try:
+            ddir = user_data_dir()
+            crash = ddir / "body-crash.log"
+            crash.write_text(traceback.format_exc(), encoding="utf-8")
+            log.error("FATAL — traceback written to %s", crash)
+        except Exception:
+            pass
+        raise

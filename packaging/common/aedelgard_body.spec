@@ -34,11 +34,19 @@ if os.path.isdir(_icondir):
 # mempalace + chromadb pull a lot in dynamically; collect generously.
 hiddenimports = []
 for pkg in ("mempalace", "chromadb", "anthropic", "flask", "dotenv",
-            "google.generativeai", "discord", "tzdata", "webview"):
+            "google.generativeai", "discord", "tzdata", "webview",
+            # pywebview's Windows backend (EdgeChromium/WebView2) loads `clr`
+            # from pythonnet dynamically; PyInstaller can't see that, so name
+            # the modules explicitly or webview.start() dies at runtime.
+            "webview.platforms", "clr_loader", "pythonnet"):
     try:
         hiddenimports += collect_submodules(pkg)
     except Exception:
         pass
+# `clr` is a compiled extension surfaced by pythonnet; ensure it is named.
+for mod in ("clr", "clr_loader.ffi"):
+    if mod not in hiddenimports:
+        hiddenimports.append(mod)
 for pkg in ("chromadb", "mempalace"):
     try:
         datas += collect_data_files(pkg)
