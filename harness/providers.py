@@ -175,9 +175,12 @@ class AedelgardProvider:
                 "pre-minted AEDELGARD_DEVICE_TOKEN. Or AGENT_PROVIDER=anthropic."
             )
         self._httpx = httpx
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
-        # Mint eagerly so a bad aedk fails at startup, not mid-conversation.
-        # (Skipped when a pre-minted token was supplied.)
+        # NOTE: do NOT cache an httpx.AsyncClient on self here. The Tower serves
+        # each chat request on its own short-lived asyncio event loop, which is
+        # closed when the request ends. An AsyncClient binds to the loop alive at
+        # construction time, so a cached client raises "Event loop is closed" on
+        # the next request. We open a fresh client per complete() call instead,
+        # which always binds to the current running loop.
 
     @staticmethod
     def _stable_fingerprint() -> str:
@@ -206,16 +209,16 @@ class AedelgardProvider:
             import uuid
             return hashlib.sha256(str(uuid.getnode()).encode()).hexdigest()[:32]
 
-    async def _mint_device_token(self) -> None:
+    async def _mint_device_token(self, client) -> None:
         """Exchange the aedk for a fresh device token via POST /v1/sessions.
         Raises if the aedk is invalid/revoked — same opaque 401 the broker
-        gives (no oracle)."""
+        gives (no oracle). Uses the caller's live (current-loop) httpx client."""
         if not self.aedk:
             raise RuntimeError(
                 "Aedelgard device token expired and no AEDELGARD_AEDK is set to "
                 "re-mint it. Re-paste your Aedelgard key."
             )
-        r = await self._client.post(
+        r = await client.post(
             f"{self.broker_url}/v1/sessions",
             json={"registration_key": self.aedk,
                   "device_fingerprint": self.device_fingerprint},
@@ -236,41 +239,46 @@ class AedelgardProvider:
 
     async def complete(self, *, model, max_tokens, system, tools, messages):
         from anthropic.types import Message
-        # Ensure we hold a token (mint from aedk on first use).
-        if not self.device_token:
-            await self._mint_device_token()
-        payload = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "system": system,
-            "tools": tools,
-            "messages": messages,
-        }
+        # Open a fresh client bound to the CURRENT event loop (see __init__ note).
+        async with self._httpx.AsyncClient(
+            timeout=self._httpx.Timeout(120.0, connect=10.0)
+        ) as client:
+            # Ensure we hold a token (mint from aedk on first use).
+            if not self.device_token:
+                await self._mint_device_token(client)
+            payload = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "system": system,
+                "tools": tools,
+                "messages": messages,
+            }
 
-        async def _post():
-            headers = {"Authorization": f"Bearer {self.device_token}"}
-            if self.device_fingerprint:
-                headers["X-Device-Fingerprint"] = self.device_fingerprint
-            return await self._client.post(
-                f"{self.broker_url}/v1/relay/complete", json=payload, headers=headers,
-            )
+            async def _post():
+                headers = {"Authorization": f"Bearer {self.device_token}"}
+                if self.device_fingerprint:
+                    headers["X-Device-Fingerprint"] = self.device_fingerprint
+                return await client.post(
+                    f"{self.broker_url}/v1/relay/complete", json=payload, headers=headers,
+                )
 
-        r = await _post()
-        # A 401 means the short-TTL token expired (or was revoked). If we own an
-        # aedk, silently re-mint ONCE and retry — this is what makes one-key real.
-        if r.status_code == 401 and self.aedk:
-            await self._mint_device_token()
             r = await _post()
-        if r.status_code != 200:
-            detail = ""
-            try:
-                detail = r.json().get("error", "")
-            except Exception:
-                detail = r.text[:160]
-            raise RuntimeError(f"Aedelgard relay HTTP {r.status_code}: {detail}")
-        raw = r.json().get("response")
-        if not raw:
-            raise RuntimeError("Aedelgard relay returned no response payload")
+            # A 401 means the short-TTL token expired (or was revoked). If we own
+            # an aedk, silently re-mint ONCE and retry — what makes one-key real.
+            if r.status_code == 401 and self.aedk:
+                await self._mint_device_token(client)
+                r = await _post()
+            # Consume the response while the client is still open.
+            if r.status_code != 200:
+                detail = ""
+                try:
+                    detail = r.json().get("error", "")
+                except Exception:
+                    detail = r.text[:160]
+                raise RuntimeError(f"Aedelgard relay HTTP {r.status_code}: {detail}")
+            raw = r.json().get("response")
+            if not raw:
+                raise RuntimeError("Aedelgard relay returned no response payload")
         # Rebuild a real Anthropic Message so downstream is byte-for-byte the
         # same shape the AnthropicProvider returns.
         return Message.model_validate(raw)
