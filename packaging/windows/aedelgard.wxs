@@ -137,15 +137,20 @@
                   DllEntry="WixQuietExec64"
                   Execute="deferred" Return="ignore" Impersonate="no" />
     <InstallExecuteSequence>
-      <!-- Kill any running body before the engine validates files-in-use, so a
-           reinstall never raises the hanging FilesInUse/RestartManager dialog.
-           Only on install/upgrade, not on pure uninstall. -->
-      <Custom Action="KillRunningBody" Before="InstallValidate" Condition="NOT REMOVE=&quot;ALL&quot;" />
+      <!-- Kill any running body inside the deferred (transactional) window,
+           just before files are written. A DEFERRED action MUST run between
+           InstallInitialize and InstallFinalize — scheduling it Before
+           InstallValidate (outside the transaction) raises error 2762
+           "Transaction not started". InstallValidate still SEES the running
+           exe, but REBOOT=ReallySuppress means it won't prompt; it simply
+           defers the locked files, and this taskkill frees them before
+           InstallFiles writes them. Only on install/upgrade, not uninstall. -->
+      <Custom Action="KillRunningBody" Before="InstallFiles" Condition="NOT REMOVE=&quot;ALL&quot;" />
       <Custom Action="RemoveLogonTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
       <!-- KillRunningBody (above) does the reinstall-over-running guard via a
-           deferred taskkill /F before InstallValidate. We deliberately do NOT
-           use util:CloseApplication — its window-enumeration + RestartManager
-           path hung the installer when REBOOT was suppressed. -->
+           deferred taskkill /F before InstallFiles. We deliberately do NOT use
+           util:CloseApplication — its window-enumeration + RestartManager path
+           hung the installer when REBOOT was suppressed. -->
     </InstallExecuteSequence>
   </Package>
 
