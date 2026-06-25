@@ -42,6 +42,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+          # System-tray presence (cross-platform). pystray draws the icon; Pillow
+          # loads the keystone PNG. On Linux pystray needs an X backend at runtime
+          # but the launcher degrades gracefully (headless) if the tray can't show.
+          pip install pystray Pillow
 
       # Native app-window backend (pywebview). Enabled on Windows + macOS, where
       # the OS webview is built-in and PyInstaller-bundles cleanly:

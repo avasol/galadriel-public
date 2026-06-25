@@ -38,7 +38,11 @@ for pkg in ("mempalace", "chromadb", "anthropic", "flask", "dotenv",
             # pywebview's Windows backend (EdgeChromium/WebView2) loads `clr`
             # from pythonnet dynamically; PyInstaller can't see that, so name
             # the modules explicitly or webview.start() dies at runtime.
-            "webview.platforms", "clr_loader", "pythonnet"):
+            "webview.platforms", "clr_loader", "pythonnet",
+            # System-tray presence (pystray) + its image dep (Pillow). The tray
+            # gives the body a visible presence in browser-mode and lets the
+            # harness own the main thread (the fix for the silent-exit death).
+            "pystray", "PIL"):
     try:
         hiddenimports += collect_submodules(pkg)
     except Exception:

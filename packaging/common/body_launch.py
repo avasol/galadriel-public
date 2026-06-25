@@ -428,7 +428,7 @@ def _register_logon_task() -> None:
         if r.returncode == 0:
             log.info("Registered per-user logon auto-start task %s", _TASK_NAME)
         else:
-            log.warning("Could not register logon task: %s", r.stderr.strip())
+            log.warning("Could not register logon task: %s", (r.stderr or "").strip())
     except Exception as e:
         log.warning("Logon task registration failed: %s", e)
 
@@ -442,6 +442,59 @@ def _maybe_self_register_autostart() -> None:
         return  # don't re-register from within the auto-started run
     if _autostart_desired() and not _logon_task_exists():
         _register_logon_task()
+
+
+
+# ── System tray: the body's permanent visible presence ───────────────────────
+# Why a tray: in browser-mode the body has NO window of its own, so a healthy
+# running body and a dead one look identical (just a flashed console). A tray
+# icon gives the mind a persistent, visible presence — right-click to Open or
+# Quit — and, crucially, lets the launcher run the HARNESS ON THE MAIN THREAD
+# (Flask/Werkzeug's dev server needs main-thread signal ownership to stay up;
+# running it two levels deep in daemon threads is what caused the silent
+# exit-after-first-request death). The tray runs in a background thread.
+def run_tray(url: str, icon_path: "Path | None", stop_cb) -> bool:
+    """Show a system-tray icon. Returns True if the tray loop started (it then
+    blocks in this thread until quit), False if pystray/Pillow is unavailable
+    so the caller can fall back to a plain keep-alive."""
+    try:
+        import pystray
+        from PIL import Image
+    except Exception as e:
+        log.info("System tray unavailable (%s); running headless presence.", e)
+        return False
+    try:
+        if icon_path and icon_path.exists():
+            image = Image.open(str(icon_path))
+        else:
+            # 1x1 fallback so pystray still has an icon to draw.
+            image = Image.new("RGBA", (64, 64), (40, 30, 70, 255))
+    except Exception as e:
+        log.warning("Tray icon image failed (%s); using a flat fallback.", e)
+        from PIL import Image as _I
+        image = _I.new("RGBA", (64, 64), (40, 30, 70, 255))
+
+    def _open(icon, item):
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    def _quit(icon, item):
+        log.info("Tray: Quit selected — shutting the body down.")
+        try:
+            icon.stop()
+        finally:
+            stop_cb()
+
+    menu = pystray.Menu(
+        pystray.MenuItem("Open Aedelgard", _open, default=True),
+        pystray.MenuItem("Quit", _quit),
+    )
+    icon = pystray.Icon("Aedelgard", image, "Aedelgard — the Mirror is present", menu)
+    log.info("System tray active — the body has a visible presence.")
+    icon.run()  # blocks this (background) thread until Quit
+    return True
 
 
 def main() -> None:
@@ -465,7 +518,7 @@ def main() -> None:
 
     # Single-instance guard: if OUR OWN body already serves this port, surface
     # it and exit rather than spawning a duplicate (which would otherwise fail
-    # to bind in a daemon thread and linger as a zombie).
+    # to bind and linger as a zombie, or — worse — collapse the whole process).
     if _port_in_use(port) and _is_our_body(port):
         log.info("An Aedelgard body is already running on port %s — opening it.", port)
         try:
@@ -477,105 +530,103 @@ def main() -> None:
     log.info("Aedelgard body data dir: %s", data_dir)
     log.info("Opening %s", url)
 
-    # Import + run the existing harness entry point. main.py supports Tower-only
-    # mode when no DISCORD_BOT_TOKEN is set — exactly the body case.
+    # Import the existing harness entry point. main.py runs Tower-only when no
+    # DISCORD_BOT_TOKEN is set — exactly the body case.
     res_root = resource_root()
     if str(res_root) not in sys.path:
         sys.path.insert(0, str(res_root))
     import main as harness_main  # noqa: E402  (repo root main.py)
 
-    # The app-feeling path: wrap the localhost UI in a NATIVE window via
-    # pywebview. Because webview.start() must own the MAIN thread (a hard GUI
-    # requirement on macOS), we run the harness server in a BACKGROUND thread
-    # and let the window block the main thread. When the window closes, the
-    # process exits (daemon server thread dies with it) — closing the window
-    # quits the app, as users expect.
     icon_master = res_root / "packaging" / "common" / "icon_render" / "aedelgard.png"
+    tray_icon = res_root / "packaging" / "common" / "icon_render" / "aedelgard_64.png"
 
-    server = threading.Thread(target=harness_main.main, daemon=True)
-    server.start()
+    # ── ARCHITECTURE (the fix for the silent exit-after-first-request death) ──
+    # The harness runs on the MAIN THREAD. Flask/Werkzeug's dev server installs
+    # signal handlers and is only stable when it owns the main thread; running it
+    # nested two daemon-threads deep (the old design) let the whole daemon chain
+    # collapse the instant the server returned — the process exited with code 0,
+    # no traceback, no crash log: exactly the "serves /chat 200 then vanishes"
+    # symptom. So: harness -> main thread; PRESENCE (browser/window + tray) ->
+    # a background thread that waits for the server, then surfaces the UI.
+    harness_main_callable = harness_main.main
 
-    # Confirm the harness server actually came UP before we try anything. If the
-    # harness thread crashed (bad credential, missing dep), the window would
-    # otherwise paint a dead frame or pywebview would fail confusingly. Probe
-    # first; if it never answers, the harness died — say so loudly (the reason
-    # is in body.log) and open the browser to the URL anyway so the user isn't
-    # staring at a vanished process.
-    if not _wait_for_server(url, timeout=30.0):
-        log.error(
-            "Harness did not start within 30s — see body.log for the cause. "
-            "The app window cannot open without it.")
-        # Still try the browser so a transient slow start isn't a dead end.
+    def _stop_everything() -> None:
+        # Tray "Quit" — the harness owns the main thread and blocks forever in
+        # tower_thread.join(); the only clean way out of a windowed process is a
+        # hard exit. The mind is already persisted to disk continuously.
+        os._exit(0)
+
+    def _presence() -> None:
+        # Wait until the harness actually answers before showing anything, so a
+        # crashed harness yields a clear log line rather than a dead window.
+        if not _wait_for_server(url, timeout=30.0):
+            log.error(
+                "Harness did not start within 30s — see body.log for the cause.")
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+            return
+
+        # Logon auto-start: present + dreaming silently. Don't fling a window at
+        # the user on every boot; the tray gives a discreet, visible presence.
+        if logon_mode:
+            log.info("Logon auto-start: body present and dreaming silently on %s. "
+                     "Open it from the tray (or Start Menu) when you want it.", url)
+            if run_tray(url, tray_icon, _stop_everything):
+                return  # tray blocks until Quit
+            return  # no tray -> stay silent; harness main thread keeps us alive
+
+        # Normal launch. On Windows, the native pywebview/WebView2 window can
+        # hard-ABORT the process when the runtime can't paint — so DEFAULT to the
+        # reliable system browser, and only try the native window on explicit
+        # opt-in WITH the runtime present. mac/Linux keep the native window.
+        native_optin = os.environ.get("AEDELGARD_NATIVE_WINDOW") == "1"
+        if os.name == "nt":
+            try_native = native_optin and _webview2_runtime_present()
+            if native_optin and not try_native:
+                log.info("Native window requested but WebView2 runtime not "
+                         "detected; opening the browser instead.")
+        else:
+            try_native = native_optin
+
+        if try_native:
+            try:
+                if open_native_window(url, icon_path=icon_master):
+                    return  # genuine window opened + closed -> presence done
+            except Exception as e:
+                log.warning("Native window raised (%s); using system browser.", e)
+
+        # Browser + tray: open the chat once, then hold a visible tray presence
+        # so a running body is never mistaken for a dead one again.
+        log.info("Opening Aedelgard in your default browser.")
         try:
             webbrowser.open(url)
         except Exception:
-            pass
-        # Keep the process alive briefly so any late server log flushes.
-        for _ in range(10):
-            if server.is_alive():
-                server.join(timeout=1.0)
-        return
+            log.info("Open your browser to %s", url)
+        if not run_tray(url, tray_icon, _stop_everything):
+            log.info("No tray available — body running headless on %s.", url)
 
-    # Logon auto-start: the mind should be PRESENT and dreaming, silently. Do
-    # NOT fling a window/browser tab at the user on every boot. They open it when
-    # they want via the Start Menu shortcut (the single-instance guard routes to
-    # this running instance). Just keep the server alive in the foreground.
-    if logon_mode:
-        log.info("Logon auto-start: body present and dreaming silently on %s. "
-                 "Open it from the Start Menu when you want it.", url)
-        try:
-            while server.is_alive():
-                server.join(timeout=1.0)
-        except KeyboardInterrupt:
-            pass
-        return
+    presence = threading.Thread(target=_presence, name="presence", daemon=True)
+    presence.start()
 
-    # Server is up. On Windows the native pywebview/WebView2 window can hard-
-    # ABORT the process (not a catchable Python exception) when the WebView2
-    # runtime can't paint — the body then 'vanishes' after serving GET / 200,
-    # with no fallback line ever logged (confirmed from Lord Isildur's body.log,
-    # 2026-06-24). Since the harness + Tower are provably healthy, the reliable
-    # surface is the system browser. So: DEFAULT to the browser on Windows, and
-    # only attempt the native window when explicitly opted in. mac/Linux keep
-    # the native window (their WebKit/GTK backends are reliable here).
-    # On Windows, only attempt the native window when (a) the user opted in AND
-    # (b) the WebView2 runtime is actually installed — otherwise the backend
-    # hard-aborts. With the runtime present + opt-in, the labelled "Aedelgard"
-    # window is safe. Without opt-in, or without the runtime, use the browser.
-    native_optin = os.environ.get("AEDELGARD_NATIVE_WINDOW") == "1"
-    if os.name == "nt":
-        try_native = native_optin and _webview2_runtime_present()
-        if native_optin and not try_native:
-            log.info("Native window requested but WebView2 runtime not detected; "
-                     "opening the browser instead (install the runtime, or the "
-                     "MSI will bundle it).")
-    else:
-        try_native = True
-
-    shown = False
-    if try_native:
-        try:
-            shown = open_native_window(url, icon_path=icon_master)
-        except Exception as e:
-            log.warning("Native window raised (%s); using system browser.", e)
-            shown = False
-    else:
-        log.info("Windows: opening Aedelgard in your default browser "
-                 "(set AEDELGARD_NATIVE_WINDOW=1 to try the native window).")
-
-    if shown:
-        return  # window closed -> quit the body
-
-    log.info("Native window unavailable; opening the system browser instead.")
+    # Hand the MAIN THREAD to the harness. This blocks (Tower-only mode joins the
+    # Tower thread; Discord mode runs the bot) and keeps the process alive for
+    # the life of the body. When it returns, the body is genuinely done.
     try:
-        webbrowser.open(url)
+        harness_main_callable()
+    except SystemExit:
+        raise
     except Exception:
-        log.info("Open your browser to %s", url)
-    try:
-        while server.is_alive():
-            server.join(timeout=1.0)
-    except KeyboardInterrupt:
-        pass
+        # A windowed build has no console; make the cause findable.
+        import traceback
+        try:
+            crash = user_data_dir() / "body-crash.log"
+            crash.write_text(traceback.format_exc(), encoding="utf-8")
+            log.error("FATAL in harness — traceback written to %s", crash)
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":

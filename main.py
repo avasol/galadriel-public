@@ -32,7 +32,7 @@ def start_tower(agent, scheduler):
     port = int(os.environ.get("TOWER_PORT", "8080"))
     log.info(f"Tower UI starting on http://{host}:{port}")
     try:
-        app.run(host=host, port=port, use_reloader=False)
+        app.run(host=host, port=port, use_reloader=False, threaded=True)
     except OSError as e:
         # Port already in use (e.g. a second body / stale instance). This runs
         # in a daemon thread, so log loudly — a swallowed bind error here is how
