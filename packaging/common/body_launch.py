@@ -247,10 +247,26 @@ def open_browser_when_ready(url: str, timeout: float = 30.0) -> None:
             break
         except Exception:
             time.sleep(0.4)
+    _open_browser_robust(url)
+
+
+def _open_browser_robust(url: str) -> None:
+    """Open <url> in a browser as reliably as possible on a frozen, windowed
+    app. webbrowser.open can silently no-op when no browser is registered in
+    the bundled process environment, so on Windows we fall back to os.startfile
+    (the Shell 'open' verb), which always honours the user's default browser."""
     try:
-        webbrowser.open(url)
+        if webbrowser.open(url):
+            return
     except Exception:
-        log.info("Open your browser to %s", url)
+        pass
+    if os.name == "nt":
+        try:
+            os.startfile(url)  # noqa: S606 - opening a localhost URL
+            return
+        except Exception:
+            pass
+    log.info("Open your browser to %s", url)
 
 
 def _wait_for_server(url: str, timeout: float = 30.0) -> bool:
@@ -736,10 +752,13 @@ def main() -> None:
         # nothing on screen. The browser is the reliable floor; the native
         # window is an on-demand nicety offered from the tray's "Open".
         log.info("Opening Aedelgard in your default browser.")
-        try:
-            webbrowser.open(url)
-        except Exception:
-            log.info("Open your browser to %s", url)
+        # Wait for the harness to actually answer before opening — otherwise the
+        # browser lands on a dead port and shows nothing. Then open robustly
+        # (webbrowser.open can silently no-op in a frozen app; os.startfile is
+        # the Windows fallback).
+        if not _wait_for_server(url, timeout=30.0):
+            log.warning("Server not ready after 30s; opening browser anyway.")
+        _open_browser_robust(url)
 
         # Always hold a visible tray presence so a running body is never
         # mistaken for a dead one — and so "Open" can summon a native window.

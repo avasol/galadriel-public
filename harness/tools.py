@@ -407,20 +407,53 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
         return f"Unknown tool: {name}"
 
 
+def _run_shell_blocking_windows(command: str, cwd: str) -> str:
+    """Windows-only shell exec with a TRULY hidden console window.
+
+    On the frozen windowed body the parent has no console, so each child
+    cmd.exe allocates a fresh visible one — the "flashing terminals" the user
+    sees. CREATE_NO_WINDOW alone proved insufficient via the asyncio proactor
+    path, so we run synchronously (in a worker thread) with an explicit
+    STARTUPINFO that hides the window AND the CREATE_NO_WINDOW flag. Belt and
+    braces — this is the combination that actually stays invisible.
+    """
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    try:
+        completed = subprocess.run(
+            command, shell=True, cwd=cwd,
+            capture_output=True, timeout=120,
+            startupinfo=si,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired:
+        return "[error] Command timed out after 120 seconds."
+    out = completed.stdout.decode("utf-8", errors="replace") if completed.stdout else ""
+    err = completed.stderr.decode("utf-8", errors="replace") if completed.stderr else ""
+    output = out
+    if err:
+        output += f"\n[stderr] {err}"
+    if completed.returncode != 0:
+        output += f"\n[exit code: {completed.returncode}]"
+    return output.strip() or "(no output)"
+
+
 async def _run_shell(command: str, working_dir: str = None) -> str:
-    """Execute a shell command asynchronously with a timeout."""
+    """Execute a shell command with a timeout, without ever flashing a console."""
     cwd = working_dir or os.getcwd()
-    # On the frozen Windows body, a bare subprocess pops a visible console
-    # window per call — the "flashing cmd prompts" the user sees. Suppress it
-    # with CREATE_NO_WINDOW (Windows-only; harmless/absent elsewhere).
-    _flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    if os.name == "nt":
+        # Hidden-window path in a worker thread so the event loop stays free.
+        try:
+            return await asyncio.to_thread(_run_shell_blocking_windows, command, cwd)
+        except Exception as e:
+            return f"[error] {e}"
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
-            creationflags=_flags,
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)

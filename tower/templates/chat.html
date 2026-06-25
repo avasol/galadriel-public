@@ -234,8 +234,15 @@
       body:JSON.stringify({message:text})})
       .then(function(r){return r.json();})
       .then(function(d){
-        if(d.error){bodyEl.innerHTML='<p style="color:#d98a8a">&#9888; '+esc(d.error)+'</p>';}
-        else{bodyEl.innerHTML=md(d.response);}
+        // A 504 "still thinking" or an empty response means the turn outran the
+        // request window but is finishing server-side — recover it from history
+        // rather than leaving the user staring at an error / blank bubble.
+        var resp = d && d.response ? d.response : '';
+        if(d.error || !resp.trim()){
+          recoverFromHistory(bodyEl, 0);
+          return;
+        }
+        bodyEl.innerHTML=md(resp);
         if(d.usage) recordUsage(d.usage);
         $scroll.scrollTop=$scroll.scrollHeight; $send.disabled=false; setLive(false); refresh();
       })
