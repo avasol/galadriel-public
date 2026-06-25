@@ -63,19 +63,23 @@
       <Directory Id="INSTALLFOLDER" Name="Aedelgard" />
     </StandardDirectory>
 
-    <!-- Reinstall-over-running guard: if the body is already running (it holds
-         port 8080 and locks aedelgard-body.exe), the file-copy phase would hit
-         'Files in Use' and prompt for a reboot or roll back. CloseApplication
-         finds the running process by exe name and ends it BEFORE costing, so a
-         clean reinstall just works. CloseCount/Timeout: try a graceful close,
-         then terminate. RebootPrompt=no: never ask the user to reboot for this. -->
-    <util:CloseApplication
-        Id="CloseRunningBody"
-        Target="aedelgard-body.exe"
-        CloseMessage="no"
-        TerminateProcess="1"
-        RebootPrompt="no"
-        EndSessionMessage="no" />
+    <!-- Reinstall-over-running guard. The body holds port 8080 and locks
+         aedelgard-body.exe, so a reinstall would hit 'Files in Use'. We do NOT
+         use util:CloseApplication: even with CloseMessage="no" it enumerates
+         windows and can surface a RestartManager dialog that HANGS when REBOOT
+         is suppressed (the body has no message pump to acknowledge a close).
+         Instead a deferred taskkill /F hard-kills the process unconditionally
+         BEFORE InstallValidate — no dialog, no RestartManager negotiation.
+         /IM matches by image name; the task self-restart can only re-launch
+         AFTER file copy, which is fine. Return="ignore": a not-running body
+         (taskkill exit 128) must not fail the install. -->
+    <SetProperty Id="KillRunningBody"
+                 Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM aedelgard-body.exe"
+                 Sequence="execute" Before="KillRunningBody" />
+    <CustomAction Id="KillRunningBody"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec64"
+                  Execute="deferred" Return="ignore" Impersonate="no" />
 
     <!-- Start Menu folder + shortcut. -->
     <StandardDirectory Id="ProgramMenuFolder">
@@ -133,12 +137,15 @@
                   DllEntry="WixQuietExec64"
                   Execute="deferred" Return="ignore" Impersonate="no" />
     <InstallExecuteSequence>
+      <!-- Kill any running body before the engine validates files-in-use, so a
+           reinstall never raises the hanging FilesInUse/RestartManager dialog.
+           Only on install/upgrade, not on pure uninstall. -->
+      <Custom Action="KillRunningBody" Before="InstallValidate" Condition="NOT REMOVE=&quot;ALL&quot;" />
       <Custom Action="RemoveLogonTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
-      <!-- The running body is terminated before costing by util:CloseApplication
-           above: in WiX v6 that element auto-schedules its own custom action
-           into InstallExecuteSequence (the bare WixCloseApplications identifier
-           was the WiX v3 idiom and no longer links in v6). Reboot escalation is
-           already suppressed by RebootPrompt="no" + REBOOT=ReallySuppress. -->
+      <!-- KillRunningBody (above) does the reinstall-over-running guard via a
+           deferred taskkill /F before InstallValidate. We deliberately do NOT
+           use util:CloseApplication — its window-enumeration + RestartManager
+           path hung the installer when REBOOT was suppressed. -->
     </InstallExecuteSequence>
   </Package>
 
