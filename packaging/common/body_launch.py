@@ -225,7 +225,20 @@ def prepare_environment() -> Path:
 
     seed_embedding_model(data_dir, res_root)
     # First-run: give the body a soul + a searchable palace, in this order.
+    #  1. seed_default_config  — bundled fallback soul (only if config empty).
+    #  2. fetch_identity        — on an aedk body, REPLACE the fallback with the
+    #     tenant's MINTED, per-tenant identity from HQ (GET /v1/bundle). Without
+    #     this an Aedelgard body wakes wearing the galadriel-public default soul
+    #     (Galadriel) instead of its own neutral Aedelgard identity. Idempotent
+    #     (.identity_fetched marker); never fatal.
+    #  3. seed_palace           — mine whatever soul now sits in config/, so the
+    #     FETCHED identity is what becomes searchable from the first wake-up.
     seed_default_config(data_dir, res_root)
+    try:
+        from .identity_sync import fetch_identity_on_first_run
+        fetch_identity_on_first_run(data_dir)
+    except Exception as e:  # never block boot on identity fetch
+        log.warning("Identity fetch wiring failed (%s) — using local soul.", e)
     seed_palace(data_dir)
     return data_dir
 
