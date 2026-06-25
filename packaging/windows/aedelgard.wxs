@@ -132,10 +132,11 @@
                   Execute="deferred" Return="ignore" Impersonate="no" />
     <InstallExecuteSequence>
       <Custom Action="RemoveLogonTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
-      <!-- Terminate the running body BEFORE costing/file-in-use checks so the
-           re-install never escalates to a reboot. WixCloseApplications is the
-           action util:CloseApplication generates. -->
-      <Custom Action="WixCloseApplications" Before="InstallValidate" />
+      <!-- The running body is terminated before costing by util:CloseApplication
+           above: in WiX v6 that element auto-schedules its own custom action
+           into InstallExecuteSequence (the bare WixCloseApplications identifier
+           was the WiX v3 idiom and no longer links in v6). Reboot escalation is
+           already suppressed by RebootPrompt="no" + REBOOT=ReallySuppress. -->
     </InstallExecuteSequence>
   </Package>
 
