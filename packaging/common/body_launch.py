@@ -169,16 +169,24 @@ def seed_palace(data_dir: Path) -> None:
                 sys.argv = old
             return buf.getvalue()
 
+        # CRITICAL: the mempalace CLI does NOT honour MEMPALACE_PATH — it
+        # resolves the palace from ~/.mempalace/config.json or ~/.mempalace/
+        # palace. The HARNESS, however, reads MEMPALACE_PATH (=<data_dir>/palace)
+        # at runtime. Without an explicit --palace, the seed would write the
+        # healthy collection to ~/.mempalace/palace while the running mind reads
+        # an empty <data_dir>/palace — "two palaces", the exact split the body
+        # diagnosed on first boot. Pass --palace so seed and runtime AGREE.
+        palace_arg = ["--palace", str(palace_dir)]
         # init: detect rooms from the config/memory folder structure.
-        _run(["init", str(data_dir)])
+        _run([*palace_arg, "init", str(data_dir)])
         # mine the seeded config so the collection is created + foundational
         # drawers (SOUL, MEMORY, TOOLS) are searchable from the first wake-up.
         if config_dir.is_dir() and any(config_dir.iterdir()):
-            _run(["mine", str(config_dir), "--wing", "agent", "--agent", "first-run"])
+            _run([*palace_arg, "mine", str(config_dir), "--wing", "agent", "--agent", "first-run"])
         if memory_dir.is_dir() and any(memory_dir.iterdir()):
-            _run(["mine", str(memory_dir), "--wing", "agent", "--agent", "first-run"])
+            _run([*palace_arg, "mine", str(memory_dir), "--wing", "agent", "--agent", "first-run"])
         # refresh the wake-up cache so the dynamic block has content on boot.
-        _run(["wake-up"])
+        _run([*palace_arg, "wake-up"])
         marker.write_text("seeded\n", encoding="utf-8")
         log.info("Palace seeded + collection initialised at %s", palace_dir)
     except Exception as e:
