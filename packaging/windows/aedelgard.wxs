@@ -73,6 +73,20 @@
          /IM matches by image name; the task self-restart can only re-launch
          AFTER file copy, which is fine. Return="ignore": a not-running body
          (taskkill exit 128) must not fail the install. -->
+    <!-- IMMEDIATE kill, runs BEFORE InstallValidate. Immediate actions need no
+         transaction (so no error 2762) and run early enough that the process is
+         already gone when files-in-use detection runs -> the "close the app"
+         dialog never appears. The body runs in the user context (/RL LIMITED),
+         so an impersonated user-context taskkill reaches it. Return=ignore:
+         a not-running body (taskkill exit 128) must not fail the install. -->
+    <CustomAction Id="KillRunningBodyNow"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[System64Folder]taskkill.exe&quot; /F /IM aedelgard-body.exe"
+                  Execute="immediate" Return="ignore" Impersonate="yes" />
+
+    <!-- DEFERRED kill, runs inside the transaction just before file copy, as a
+         backstop in case the body respawned (e.g. its logon task) between the
+         immediate kill and file write. Runs elevated (Impersonate=no). -->
     <SetProperty Id="KillRunningBody"
                  Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM aedelgard-body.exe"
                  Sequence="execute" Before="KillRunningBody" />
@@ -137,20 +151,21 @@
                   DllEntry="WixQuietExec64"
                   Execute="deferred" Return="ignore" Impersonate="no" />
     <InstallExecuteSequence>
-      <!-- Kill any running body inside the deferred (transactional) window,
-           just before files are written. A DEFERRED action MUST run between
-           InstallInitialize and InstallFinalize — scheduling it Before
-           InstallValidate (outside the transaction) raises error 2762
-           "Transaction not started". InstallValidate still SEES the running
-           exe, but REBOOT=ReallySuppress means it won't prompt; it simply
-           defers the locked files, and this taskkill frees them before
-           InstallFiles writes them. Only on install/upgrade, not uninstall. -->
+      <!-- TWO-STAGE reinstall-over-running guard, no dialog, no hang, no 2762:
+           (1) KillRunningBodyNow — IMMEDIATE, Before InstallValidate. Immediate
+               actions need no transaction (no 2762) and run early enough that
+               the body is already dead when files-in-use DETECTION runs, so the
+               "close the application" dialog never appears. Impersonated, so it
+               reaches the user-context body (/RL LIMITED).
+           (2) KillRunningBody — DEFERRED, Before InstallFiles. Elevated
+               backstop: kills again inside the transaction in case the logon
+               task respawned the body between (1) and file copy.
+           We deliberately do NOT use util:CloseApplication — its window
+           enumeration + RestartManager path HUNG the installer when REBOOT was
+           suppressed (the body has no message pump to ack a close). -->
+      <Custom Action="KillRunningBodyNow" Before="InstallValidate" Condition="NOT REMOVE=&quot;ALL&quot;" />
       <Custom Action="KillRunningBody" Before="InstallFiles" Condition="NOT REMOVE=&quot;ALL&quot;" />
       <Custom Action="RemoveLogonTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
-      <!-- KillRunningBody (above) does the reinstall-over-running guard via a
-           deferred taskkill /F before InstallFiles. We deliberately do NOT use
-           util:CloseApplication — its window-enumeration + RestartManager path
-           hung the installer when REBOOT was suppressed. -->
     </InstallExecuteSequence>
   </Package>
 
