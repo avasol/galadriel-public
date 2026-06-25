@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import subprocess
 from pathlib import Path
 
 TOOL_DEFINITIONS = [
@@ -409,12 +410,17 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
 async def _run_shell(command: str, working_dir: str = None) -> str:
     """Execute a shell command asynchronously with a timeout."""
     cwd = working_dir or os.getcwd()
+    # On the frozen Windows body, a bare subprocess pops a visible console
+    # window per call — the "flashing cmd prompts" the user sees. Suppress it
+    # with CREATE_NO_WINDOW (Windows-only; harmless/absent elsewhere).
+    _flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            creationflags=_flags,
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)

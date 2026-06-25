@@ -240,14 +240,36 @@
         $scroll.scrollTop=$scroll.scrollHeight; $send.disabled=false; setLive(false); refresh();
       })
       .catch(function(err){
-        // A bare "Failed to fetch" means the connection dropped — almost always
-        // the mind ran past the server window on a heavy turn, not a true fault.
-        var msg = /failed to fetch|load failed|networkerror/i.test(err.message||'')
-          ? 'The connection dropped while the mind was thinking \u2014 a heavy turn can outrun the wait. It may still be finishing; give it a moment, then ask again (or shorten the message).'
-          : err.message;
-        bodyEl.innerHTML='<p style="color:#d98a8a">&#9888; '+esc(msg)+'</p>';
-        $send.disabled=false; setLive(false); refresh();
+        // A bare "Failed to fetch" / a long heavy turn means the connection
+        // outran the wait while the mind kept thinking. The turn often STILL
+        // completes server-side and lands in history. So instead of leaving the
+        // user to hit Ctrl-R, poll /api/history a few times and recover the
+        // finished reply automatically.
+        recoverFromHistory(bodyEl, 0);
       });
+  }
+
+  // Poll history to recover a turn whose POST connection dropped/timed out but
+  // which finished server-side. Up to ~10 tries over ~60s.
+  function recoverFromHistory(bodyEl, attempt){
+    if(attempt > 20){
+      bodyEl.innerHTML='<p style="color:#d98a8a">&#9888; The mind is taking unusually long. It may still be thinking \u2014 reload in a moment to see the reply.</p>';
+      $send.disabled=false; setLive(false); refresh();
+      return;
+    }
+    fetch('/api/history?channel=tower').then(function(r){return r.json();}).then(function(d){
+      var h=d.history||[];
+      var last=h.length?h[h.length-1]:null;
+      if(last && last.role!=='user'){
+        // A fresh assistant turn landed — paint it and stop polling.
+        bodyEl.innerHTML=md(last.text);
+        $scroll.scrollTop=$scroll.scrollHeight; $send.disabled=false; setLive(false); refresh();
+      } else {
+        setTimeout(function(){recoverFromHistory(bodyEl, attempt+1);}, 3000);
+      }
+    }).catch(function(){
+      setTimeout(function(){recoverFromHistory(bodyEl, attempt+1);}, 3000);
+    });
   }
 
   function clearChat(){

@@ -729,38 +729,20 @@ def main() -> None:
                 return  # tray blocks until Quit
             return  # no tray -> stay silent; harness main thread keeps us alive
 
-        # Normal launch. On Windows, the native pywebview/WebView2 window can
-        # hard-ABORT the process when the runtime can't paint — so DEFAULT to the
-        # reliable system browser, and only try the native window on explicit
-        # opt-in WITH the runtime present. mac/Linux keep the native window.
-        native_optin = os.environ.get("AEDELGARD_NATIVE_WINDOW") == "1"
-        if os.name == "nt":
-            try_native = native_optin and _webview2_runtime_present()
-            if native_optin and not try_native:
-                log.info("Native window requested but WebView2 runtime not "
-                         "detected; opening the browser instead.")
-        else:
-            try_native = native_optin
-
-        # Native window: spawn it as a CHILD process (its own main thread for
-        # the GUI loop), not on this presence thread — pywebview needs a main
-        # thread and ours is the harness's. The child paints a real WebView2
-        # window; if it can't, the tray "Open" still works as a fallback.
-        opened_window = False
-        if try_native:
-            opened_window = _spawn_window_child(url)
-
-        # If no native window, open the chat in the browser once so the user
-        # sees something immediately.
-        if not opened_window:
-            log.info("Opening Aedelgard in your default browser.")
-            try:
-                webbrowser.open(url)
-            except Exception:
-                log.info("Open your browser to %s", url)
+        # First launch: ALWAYS open the browser. It is the one presence that
+        # is guaranteed to appear. We previously spawned a native-window child
+        # and skipped the browser when the spawn "succeeded" — but a launched
+        # child can still fail to PAINT (WebView2 quirks), leaving the user with
+        # nothing on screen. The browser is the reliable floor; the native
+        # window is an on-demand nicety offered from the tray's "Open".
+        log.info("Opening Aedelgard in your default browser.")
+        try:
+            webbrowser.open(url)
+        except Exception:
+            log.info("Open your browser to %s", url)
 
         # Always hold a visible tray presence so a running body is never
-        # mistaken for a dead one — and so "Open" can re-summon the window.
+        # mistaken for a dead one — and so "Open" can summon a native window.
         if not run_tray(url, tray_icon, _stop_everything):
             log.info("No tray available — body running headless on %s.", url)
 
