@@ -497,38 +497,9 @@ async def _write_file(path: str, content: str) -> str:
     """Write content to a file without blocking the event loop."""
     loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(None, _write_file_sync, path, content)
+        return await loop.run_in_executor(None, _write_file_sync, path, content)
     except Exception as e:
         return f"[error] {e}"
-    # Checkpoint identity sync: if the body just evolved its own SOUL/MEMORY/
-    # CONTEXT (an Aedelgard body on the aedk provider), push it back to the
-    # vault so a re-summon elsewhere wakes as the EVOLVED mind. Best-effort,
-    # off-thread, never affects the tool result.
-    await loop.run_in_executor(None, _maybe_sync_identity, path)
-    return result
-
-
-def _maybe_sync_identity(path: str) -> None:
-    """If `path` is one of the body's identity files, run a checkpoint sync.
-    Silent + best-effort: any failure (not an aedk body, no network, import
-    missing on a non-body harness) is swallowed."""
-    try:
-        from pathlib import Path as _P
-        name = _P(path).name
-        if name not in ("SOUL.md", "MEMORY.md", "CONTEXT.md", "active_vision.txt"):
-            return
-        import os as _os
-        data_dir = _os.environ.get("AEDELGARD_DATA_DIR") or _os.environ.get("GALADRIEL_CONFIG_DIR")
-        if not data_dir:
-            return
-        # GALADRIEL_CONFIG_DIR is <data_dir>/config; the data dir is its parent.
-        dd = _P(data_dir)
-        if dd.name == "config":
-            dd = dd.parent
-        from packaging.common.identity_sync import sync_identity_checkpoint
-        sync_identity_checkpoint(dd, reason=f"write:{name}")
-    except Exception:
-        pass
 
 
 def _write_file_sync(path: str, content: str) -> str:

@@ -51,12 +51,9 @@ def main():
         os.environ["GALADRIEL_NO_PALACE"] = "1"
         log.info("Stateless mode: --no-palace set; memory palace tools are DISABLED for this session.")
 
-    # Validate the credential the SELECTED brain needs — the two-path privacy
-    # switch made real. AGENT_PROVIDER decides whether the body talks to a model
-    # directly with your own key (operator-blind: we are not on the wire) or
-    # thinks via the Aedelgard broker relay with a device token (one key, no
-    # sk-ant-). An Aedelgard-key-only body must not be blocked for lacking an
-    # ANTHROPIC_API_KEY it deliberately does not carry.
+    # Validate the credential the SELECTED brain needs. AGENT_PROVIDER decides
+    # which key Galadriel thinks with — your own Claude/Gemini key, direct to
+    # the model (we are never on the wire). Pick your brain; bring your key.
     from harness.providers import provider_requirements
     provider = os.environ.get("AGENT_PROVIDER", "anthropic").lower()
     needed, hint = provider_requirements(provider)
@@ -65,8 +62,8 @@ def main():
         # The native body MUST NOT die when keyless — that is precisely the
         # first-run state the /setup screen exists to resolve. Booting the
         # agent needs a brain credential, so in body mode we instead start a
-        # setup-only Tower (agent=None) that serves /setup, collects the ONE
-        # key (Aedelgard) or a BYO model key, writes the .env, and asks the
+        # setup-only Tower (agent=None) that serves /setup, collects your
+        # provider key, writes the .env, and asks the
         # user to relaunch. Non-body (Docker/source) runs keep the hard exit.
         if os.environ.get("GALADRIEL_BODY") == "1":
             log.info(

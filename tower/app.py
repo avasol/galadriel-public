@@ -25,8 +25,8 @@ def create_tower(agent, scheduler=None) -> Flask:
     def healthz():
         # Identity probe for the native body's single-instance guard: lets a
         # second launch confirm the listener on the port is genuinely an
-        # Aedelgard body (not a stranger app) before bowing out.
-        return jsonify({"status": "ok", "service": "aedelgard-body"})
+        # Galadriel (not a stranger app) before bowing out.
+        return jsonify({"status": "ok", "service": "galadriel"})
 
     @app.route("/")
     def index():
@@ -270,8 +270,8 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     # ── First-run setup (native body) ────────────────────────────
     # Shown when the body boots with no usable brain credential. Captures the
-    # ONE key (Aedelgard device token) OR a BYO provider key, writes the .env
-    # into the per-OS user data dir, and hands the user to the chat.
+    # BYO provider key, writes the .env into the user data dir, and hands
+    # the user to the chat.
 
     def _dotenv_path():
         import os
@@ -284,14 +284,14 @@ def create_tower(agent, scheduler=None) -> Flask:
     @app.route("/api/setup", methods=["POST"])
     def api_setup():
         """Write the brain credential to the body's .env. Body JSON:
-          {"provider": "anthropic"|"gemini"|"aedelgard", ...key fields}
+          {"provider": "anthropic"|"gemini", ...key fields}
         """
         import os
         data = request.json or {}
         provider = (data.get("provider") or "").strip().lower()
 
         lines = [
-            "# Written by the Aedelgard body first-run setup.",
+            "# Written by Galadriel first-run setup.",
             f"AGENT_PROVIDER={provider}",
             "TOWER_HOST=127.0.0.1",
             "TOWER_PORT=8080",
@@ -308,19 +308,8 @@ def create_tower(agent, scheduler=None) -> Flask:
                 return jsonify({"error": "Enter your Google Gemini API key."}), 400
             lines.append(f"GEMINI_API_KEY={key}")
             lines.append("GEMINI_MODEL=" + (data.get("gemini_model") or "gemini-2.5-flash").strip())
-        elif provider == "aedelgard":
-            # ONE KEY: the user pastes their aedk (registration key). The
-            # AedelgardProvider mints + silently refreshes device tokens from it,
-            # so the body keeps thinking past the ~1h token TTL. No device-token
-            # paste, no expiry surprise — "paste your key once" made true.
-            aedk = (data.get("aedelgard_aedk") or data.get("aedelgard_key") or "").strip()
-            broker = (data.get("aedelgard_broker_url") or "https://hq.aedelgard.com").strip()
-            if not aedk:
-                return jsonify({"error": "Paste your Aedelgard key (aedk…)."}), 400
-            lines.append(f"AEDELGARD_BROKER_URL={broker}")
-            lines.append(f"AEDELGARD_AEDK={aedk}")
         else:
-            return jsonify({"error": "Choose a brain: anthropic, gemini, or aedelgard."}), 400
+            return jsonify({"error": "Choose a brain: anthropic or gemini."}), 400
 
         try:
             with open(_dotenv_path(), "w", encoding="utf-8") as fh:

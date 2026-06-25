@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Aedelgard — Awaken your mind</title>
+  <title>Galadriel — Awaken your mind</title>
   <style>
     :root {
       --bg: #0b0d12; --panel: #141823; --ink: #e8ecf4; --muted: #8b94a7;
@@ -56,20 +56,9 @@
 
     <label for="provider">Brain</label>
     <select id="provider" onchange="pick()">
-      <option value="aedelgard">Aedelgard key only — think through the broker (one key, no setup)</option>
       <option value="anthropic">Bring your own Claude key (operator-blind — we are never on the wire)</option>
       <option value="gemini">Bring your own Google Gemini key</option>
     </select>
-
-    <!-- Aedelgard one-key path -->
-    <div class="field on" data-p="aedelgard">
-      <label>Aedelgard key</label>
-      <input id="aedk_token" type="password" placeholder="aedk…">
-      <label>Broker URL</label>
-      <input id="aedk_broker" type="text" value="https://api.aedelgard.com">
-      <p class="hint">No <code>sk-</code> key lives on your machine. The body thinks via the
-        Aedelgard relay; your memory still seals to your own key, blind at rest.</p>
-    </div>
 
     <!-- BYO Anthropic -->
     <div class="field" data-p="anthropic">
@@ -103,15 +92,6 @@
     async function save() {
       const provider = document.getElementById('provider').value;
       const body = { provider };
-      if (provider === 'aedelgard') {
-        body.aedelgard_aedk = document.getElementById('aedk_token').value;
-        body.aedelgard_broker_url = document.getElementById('aedk_broker').value;
-      } else if (provider === 'anthropic') {
-        body.anthropic_api_key = document.getElementById('anthropic_key').value;
-      } else if (provider === 'gemini') {
-        body.gemini_api_key = document.getElementById('gemini_key').value;
-        body.gemini_model = document.getElementById('gemini_model').value;
-      }
       const btn = document.getElementById('go');
       btn.disabled = true; setMsg('Sealing your choice…');
       try {

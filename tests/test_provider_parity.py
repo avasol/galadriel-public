@@ -129,7 +129,7 @@ if __name__ == "__main__":
 # ─── Bedrock Nova — tool parity (the next brick after the text-path proof) ────
 #
 # Portability was proven for the TEXT path (commit 6e6f885). The remaining brick
-# named on aedelgard.com/architecture: tool-use translation for non-Claude
+# tool-use translation for non-Claude brains
 # brains, so an alternate model runs the full tool cascade — not just answers in
 # text. These tests pin the translation contract in BOTH directions:
 #   1. Anthropic tools  -> Bedrock Converse toolConfig (outbound)
@@ -229,122 +229,18 @@ def test_nova_tool_result_history_maps_to_converse():
     assert tu["input"] == {"command": "ls"}
 
 
-# ─── Aedelgard relay — the body's one-key brain socket (Rung A) ───────────────
-#
-# The body thinks via the broker's transparent completion relay with ONLY an
-# aedk-derived device token — no sk-ant- on the user's machine. These tests pin
-# the contract: the provider forwards the body's own Anthropic-shaped request
-# verbatim with the right auth, and rebuilds the raw relay response into a real
-# anthropic.types.Message so the agent's tool cascade walks it identically to a
-# direct Anthropic turn. httpx is mocked — no network.
-
-def _aedelgard_provider_with_capture():
-    """Build an AedelgardProvider whose httpx POST is captured, returning a
-    canned relay response (a tool_use turn)."""
-    from harness.providers import AedelgardProvider
-    captured = {}
-
-    class _Resp:
-        status_code = 200
-        def json(self):
-            return {"response": {
-                "id": "msg_relay_1", "type": "message", "role": "assistant",
-                "model": "claude-sonnet-4-20250514",
-                "content": [
-                    {"type": "text", "text": "checking"},
-                    {"type": "tool_use", "id": "tu_9", "name": "run_shell",
-                     "input": {"command": "date"}},
-                ],
-                "stop_reason": "tool_use", "stop_sequence": None,
-                "usage": {"input_tokens": 42, "output_tokens": 7,
-                          "cache_read_input_tokens": 1000,
-                          "cache_creation_input_tokens": 0},
-            }}
-
-    async def _post(url, json=None, headers=None):
-        captured["url"] = url
-        captured["json"] = json
-        captured["headers"] = headers
-        return _Resp()
-
-    prov = AedelgardProvider(
-        broker_url="https://hq.aedelgard.test/",
-        device_token="dev-token-abc",
-        device_fingerprint="fp-xyz",
-    )
-    prov._client.post = _post  # type: ignore
-    return prov, captured
-
-
-def test_aedelgard_provider_forwards_request_and_auth():
-    """The provider must POST the body's own {model,max_tokens,system,tools,
-    messages} verbatim to /v1/relay/complete, with the device token + fingerprint
-    as auth — the 'one key' contract."""
-    prov, captured = _aedelgard_provider_with_capture()
-    asyncio.run(prov.complete(
-        model="claude-sonnet-4-20250514", max_tokens=4096,
-        system=SYSTEM_BLOCKS, tools=TOOLS, messages=MESSAGES,
-    ))
-    assert captured["url"] == "https://hq.aedelgard.test/v1/relay/complete"
-    assert captured["headers"]["Authorization"] == "Bearer dev-token-abc"
-    assert captured["headers"]["X-Device-Fingerprint"] == "fp-xyz"
-    body = captured["json"]
-    assert body["model"] == "claude-sonnet-4-20250514"
-    assert body["max_tokens"] == 4096
-    assert body["system"] == SYSTEM_BLOCKS
-    assert body["tools"] == TOOLS
-    assert body["messages"] == MESSAGES
-
-
-def test_aedelgard_provider_rebuilds_anthropic_tool_use():
-    """The relay's raw JSON must rebuild into a real anthropic.types.Message so
-    the agent loop reads stop_reason/.type/.name/.input/.id unchanged."""
-    prov, _ = _aedelgard_provider_with_capture()
-    resp = asyncio.run(prov.complete(
-        model="m", max_tokens=10, system=SYSTEM_BLOCKS, tools=TOOLS, messages=MESSAGES,
-    ))
-    assert resp.stop_reason == "tool_use"
-    tu = [b for b in resp.content if b.type == "tool_use"]
-    assert len(tu) == 1
-    assert tu[0].name == "run_shell"
-    assert tu[0].input == {"command": "date"}
-    assert tu[0].id == "tu_9"
-    # usage() normalises identically to AnthropicProvider (cost panel parity)
-    u = prov.usage(resp)
-    assert u == {"input": 42, "cache_read": 1000, "cache_write": 0, "output": 7}
-
-
-def test_aedelgard_provider_requires_config():
-    """No broker URL / device token -> honest RuntimeError, not silent failure."""
-    from harness.providers import AedelgardProvider
-    import pytest as _pytest
-    # clear any ambient env
-    for k in ("AEDELGARD_BROKER_URL", "AEDELGARD_DEVICE_TOKEN", "AEDELGARD_AEDK"):
-        os.environ.pop(k, None)
-    with _pytest.raises(RuntimeError):
-        AedelgardProvider()
-
-
 # ─── The two-path switch: provider-aware boot requirements ────────────────────
 #
 # The architecture page promises a binary switch: which key the body carries
 # decides whether we are on the wire. The body must therefore boot on the
 # credential the SELECTED brain needs — and must NOT demand an ANTHROPIC_API_KEY
-# from an Aedelgard-key-only or local-model body. These pin that contract.
+# from a non-Claude (e.g. local-model) brain. These pin that contract.
 
 def test_provider_requirements_anthropic_needs_claude_key():
     from harness.providers import provider_requirements
     needed, hint = provider_requirements("anthropic")
     assert "ANTHROPIC_API_KEY" in needed
     assert "operator-blind" in hint
-
-
-def test_provider_requirements_aedelgard_needs_device_token_not_claude():
-    from harness.providers import provider_requirements
-    needed, _ = provider_requirements("aedelgard")
-    assert "AEDELGARD_AEDK" in needed            # one key, self-minting
-    assert "AEDELGARD_DEVICE_TOKEN" in needed    # legacy pre-minted still ok
-    assert "ANTHROPIC_API_KEY" not in needed  # one key, no sk-ant-
 
 
 def test_provider_requirements_local_needs_nothing():
@@ -362,9 +258,9 @@ def test_provider_requirements_gemini_accepts_either_google_var():
 
 def test_provider_requirements_reads_env_default(monkeypatch):
     from harness.providers import provider_requirements
-    monkeypatch.setenv("AGENT_PROVIDER", "aedelgard")
+    monkeypatch.setenv("AGENT_PROVIDER", "gemini")
     needed, _ = provider_requirements()  # no arg -> read env
-    assert "AEDELGARD_AEDK" in needed
+    assert "GEMINI_API_KEY" in needed
 
 
 # ─── Gemini provider: a second BYO brain, full tool parity (no network) ───────
@@ -430,73 +326,3 @@ def test_gemini_in_registry_and_no_longer_stub(monkeypatch):
     assert isinstance(p, GeminiProvider)
     assert p.name == "gemini"
 
-
-# ─── One-key self-mint: the aedk lifecycle the body owns ──────────────────────
-#
-# The killer onboarding: the user pastes an aedk ONCE. Device tokens expire
-# (~1h TTL); the provider must mint from the aedk on first use and silently
-# re-mint on a 401, so "paste your key once" is true, not hollow. httpx mocked.
-
-def _aedelgard_provider_aedk(relay_statuses):
-    """AedelgardProvider configured with an aedk (no pre-minted token). The
-    mocked client serves /v1/sessions mints and /v1/relay/complete calls whose
-    HTTP status walks `relay_statuses` (a list, popped per relay call)."""
-    import os as _os
-    from harness.providers import AedelgardProvider
-    for k in ("AEDELGARD_DEVICE_TOKEN", "AEDELGARD_DEVICE_FINGERPRINT"):
-        _os.environ.pop(k, None)
-    calls = {"sessions": 0, "relay": 0, "tokens_used": []}
-
-    class _RelayResp:
-        def __init__(self, status): self.status_code = status
-        def json(self):
-            return {"response": {
-                "id": "m", "type": "message", "role": "assistant", "model": "m",
-                "content": [{"type": "text", "text": "ok"}],
-                "stop_reason": "end_turn", "stop_sequence": None,
-                "usage": {"input_tokens": 1, "output_tokens": 1,
-                          "cache_read_input_tokens": 0,
-                          "cache_creation_input_tokens": 0},
-            }, "error": "expired"}
-
-    class _SessResp:
-        status_code = 200
-        def __init__(self, n): self._n = n
-        def json(self): return {"device_token": f"minted-{self._n}", "ttl_seconds": 3600}
-
-    async def _post(url, json=None, headers=None):
-        if url.endswith("/v1/sessions"):
-            calls["sessions"] += 1
-            assert json["registration_key"] == "aedk_test_123"
-            assert json["device_fingerprint"]            # provider supplied one
-            return _SessResp(calls["sessions"])
-        calls["relay"] += 1
-        calls["tokens_used"].append(headers["Authorization"])
-        return _RelayResp(relay_statuses.pop(0))
-
-    prov = AedelgardProvider(broker_url="https://hq.aedelgard.test",
-                             aedk="aedk_test_123",
-                             device_fingerprint="fp-fixed")
-    prov._client.post = _post  # type: ignore
-    return prov, calls
-
-
-def test_aedelgard_self_mints_from_aedk_on_first_use():
-    prov, calls = _aedelgard_provider_aedk([200])
-    assert prov.device_token == ""           # nothing minted at construction
-    asyncio.run(prov.complete(model="m", max_tokens=10,
-                              system=SYSTEM_BLOCKS, tools=TOOLS, messages=MESSAGES))
-    assert calls["sessions"] == 1            # minted once, lazily
-    assert calls["relay"] == 1
-    assert calls["tokens_used"] == ["Bearer minted-1"]
-
-
-def test_aedelgard_remints_once_on_401_and_retries():
-    # First relay call 401s (token expired) -> re-mint -> retry succeeds.
-    prov, calls = _aedelgard_provider_aedk([401, 200])
-    resp = asyncio.run(prov.complete(model="m", max_tokens=10,
-                                     system=SYSTEM_BLOCKS, tools=TOOLS, messages=MESSAGES))
-    assert calls["sessions"] == 2            # initial mint + one re-mint
-    assert calls["relay"] == 2               # original + retry
-    assert calls["tokens_used"] == ["Bearer minted-1", "Bearer minted-2"]
-    assert resp.stop_reason == "end_turn"    # the retried call's result is returned
