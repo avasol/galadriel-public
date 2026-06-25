@@ -82,6 +82,91 @@ def seed_embedding_model(data_dir: Path, res_root: Path) -> None:
 
 
 # ── 3. Wire the harness to the user data dir via env ──────────────────────────
+def seed_default_config(data_dir: Path, res_root: Path) -> None:
+    """Copy the BUNDLED default config (SOUL.md, MEMORY.md, TOOLS.md, …) into
+    the user's writable config dir on first run.
+
+    Without this the body redirects GALADRIEL_CONFIG_DIR to an EMPTY <data>/config
+    and boots with no soul and nothing to mine — the mind wakes contentless and
+    the palace collection is never created (CollectionNotInitializedError on every
+    wake-up/search). We copy each bundled file that the user does not already have
+    (never overwrite — the user owns their config once seeded).
+    """
+    src = res_root / "config"
+    dest = data_dir / "config"
+    if not src.is_dir():
+        log.info("No bundled config at %s; body will start with defaults.", src)
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for item in src.rglob("*"):
+        if item.is_dir():
+            continue
+        rel = item.relative_to(src)
+        target = dest / rel
+        if target.exists():
+            continue  # never clobber the user's own config
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(item, target)
+            copied += 1
+        except Exception as e:
+            log.warning("Config seed: could not copy %s (%s)", rel, e)
+    if copied:
+        log.info("Seeded %d default config file(s) -> %s", copied, dest)
+
+
+def seed_palace(data_dir: Path) -> None:
+    """Initialise + first-mine the palace IN-PROCESS so the ChromaDB collection
+    exists before the agent reads it.
+
+    The harness drives the palace by shelling out to the `mempalace` CLI, which
+    does not exist as a sibling binary in a frozen app — so we run mempalace's
+    CLI in-process here (it is importable inside the bundle). Idempotent: if the
+    collection already holds drawers we skip. Never fatal — a failed seed must
+    not block boot; the agent will simply mine later.
+    """
+    palace_dir = data_dir / "palace"
+    config_dir = data_dir / "config"
+    memory_dir = data_dir / "memory"
+    # Already seeded? chroma.sqlite3 with content > a fresh empty file.
+    marker = palace_dir / ".seeded"
+    if marker.exists():
+        return
+    try:
+        import io, contextlib
+        from mempalace.cli import main as cli_main
+
+        def _run(argv):
+            old = sys.argv
+            sys.argv = ["mempalace", *argv]
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                    cli_main()
+            except SystemExit:
+                pass
+            finally:
+                sys.argv = old
+            return buf.getvalue()
+
+        # init: detect rooms from the config/memory folder structure.
+        _run(["init", str(data_dir)])
+        # mine the seeded config so the collection is created + foundational
+        # drawers (SOUL, MEMORY, TOOLS) are searchable from the first wake-up.
+        if config_dir.is_dir() and any(config_dir.iterdir()):
+            _run(["mine", str(config_dir), "--wing", "agent", "--agent", "first-run"])
+        if memory_dir.is_dir() and any(memory_dir.iterdir()):
+            _run(["mine", str(memory_dir), "--wing", "agent", "--agent", "first-run"])
+        # refresh the wake-up cache so the dynamic block has content on boot.
+        _run(["wake-up"])
+        marker.write_text("seeded\n", encoding="utf-8")
+        log.info("Palace seeded + collection initialised at %s", palace_dir)
+    except Exception as e:
+        # Non-fatal: the body still boots; the agent mines on its own later.
+        log.warning("Palace seed skipped (%s) — the mind will mine on demand.", e)
+
+
 def prepare_environment() -> Path:
     data_dir = user_data_dir()
     res_root = resource_root()
@@ -112,6 +197,9 @@ def prepare_environment() -> Path:
         (data_dir / sub).mkdir(parents=True, exist_ok=True)
 
     seed_embedding_model(data_dir, res_root)
+    # First-run: give the body a soul + a searchable palace, in this order.
+    seed_default_config(data_dir, res_root)
+    seed_palace(data_dir)
     return data_dir
 
 

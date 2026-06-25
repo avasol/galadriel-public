@@ -43,7 +43,80 @@ WAKE_UP_TIMEOUT_SEC = 30
 # Resolve the mempalace CLI from the same venv as the running Python, so
 # subprocess calls do not silently break if PATH is not set (test harnesses,
 # bare shells, cron contexts).
-MEMPALACE_BIN = str(Path(sys.executable).parent / "mempalace")
+#
+# CRITICAL for the native body (PyInstaller): in a frozen app `sys.executable`
+# is the body's OWN .exe/.app — there is NO sibling `mempalace` console-script,
+# so shelling out to it raises WinError 2 ("cannot find the path") and breaks
+# every mine / wake-up / taxonomy / diary call. We therefore detect that case
+# and run mempalace's CLI IN-PROCESS instead (it is importable inside the
+# bundle). `_run_mempalace()` below abstracts both paths.
+def _resolve_mempalace_bin() -> str | None:
+    """Path to a runnable `mempalace` console-script, or None if we must run
+    the CLI in-process (frozen app, or the script is genuinely absent)."""
+    import shutil
+    # Frozen build (PyInstaller / py2app): no sibling console-script exists;
+    # force the in-process path.
+    if getattr(sys, "frozen", False):
+        return None
+    cand = Path(sys.executable).parent / "mempalace"
+    if cand.exists():
+        return str(cand)
+    cand_exe = Path(sys.executable).parent / "mempalace.exe"  # Windows venv
+    if cand_exe.exists():
+        return str(cand_exe)
+    on_path = shutil.which("mempalace")
+    if on_path:
+        return on_path
+    return None  # fall back to in-process
+
+
+MEMPALACE_BIN = _resolve_mempalace_bin()
+
+
+async def _run_mempalace(args: list[str], timeout: int) -> tuple[int, str, str]:
+    """Run a mempalace CLI invocation, returning (returncode, stdout, stderr).
+
+    Two execution paths, transparent to callers:
+      * BIN present  -> subprocess (fast, isolated; the always-on host path).
+      * BIN is None  -> in-process `mempalace.cli.main()` in a worker thread
+                        (the frozen-body path; no external binary needed). We
+                        patch sys.argv, capture stdout/stderr, and translate a
+                        SystemExit raised by argparse/main into a return code.
+    `args` excludes the program name (e.g. ["mine", "/path", "--wing", "agent"]).
+    """
+    if MEMPALACE_BIN:
+        proc = await asyncio.create_subprocess_exec(
+            MEMPALACE_BIN, *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return (proc.returncode,
+                out.decode(errors="replace"),
+                err.decode(errors="replace"))
+
+    # In-process path (frozen body). Run in a thread so the event loop is free.
+    def _invoke() -> tuple[int, str, str]:
+        import io
+        import contextlib
+        from mempalace.cli import main as _cli_main
+        rc = 0
+        out_buf, err_buf = io.StringIO(), io.StringIO()
+        old_argv = sys.argv
+        sys.argv = ["mempalace", *args]
+        try:
+            with contextlib.redirect_stdout(out_buf),                  contextlib.redirect_stderr(err_buf):
+                _cli_main()
+        except SystemExit as e:  # argparse / explicit exit
+            rc = int(e.code) if isinstance(e.code, int) else (0 if not e.code else 1)
+        except Exception as e:  # genuine failure
+            rc = 1
+            err_buf.write(f"{type(e).__name__}: {e}")
+        finally:
+            sys.argv = old_argv
+        return (rc, out_buf.getvalue(), err_buf.getvalue())
+
+    return await asyncio.wait_for(asyncio.to_thread(_invoke), timeout=timeout)
 
 
 def _palace_path() -> str:
@@ -185,29 +258,18 @@ async def mine_batch_dir(
     (decisions, preferences, milestones, problems, emotional) — used by the
     /new conversation archival path.
     """
-    cmd = [MEMPALACE_BIN, "mine", str(batch_dir),
-           "--wing", DEFAULT_WING, "--agent", agent]
+    args = ["mine", str(batch_dir), "--wing", DEFAULT_WING, "--agent", agent]
     if mode:
-        cmd += ["--mode", mode]
+        args += ["--mode", mode]
     if extract:
-        cmd += ["--extract", extract]
+        args += ["--extract", extract]
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=MINE_TIMEOUT_SEC
-        )
-        if proc.returncode == 0:
+        rc, _out, err = await _run_mempalace(args, timeout=MINE_TIMEOUT_SEC)
+        if rc == 0:
             # Refresh the wake-up cache so the dynamic block picks up new drawers
             asyncio.ensure_future(refresh_wake_up_cache())
             return True
-        log.warning(
-            f"Palace mine rc={proc.returncode} at {batch_dir}: "
-            f"{stderr.decode(errors='replace')[:500]}"
-        )
+        log.warning(f"Palace mine rc={rc} at {batch_dir}: {err[:500]}")
     except asyncio.TimeoutError:
         log.warning(f"Palace mine timed out after {MINE_TIMEOUT_SEC}s at {batch_dir}")
     except Exception as e:
@@ -416,24 +478,14 @@ async def wake_up(wing: str | None = None) -> str:
     `mempalace wake-up` with an optional --wing filter *right now*,
     so the agent can pull a targeted palace overview mid-conversation.
     """
-    args = [MEMPALACE_BIN, "wake-up"]
+    args = ["wake-up"]
     if wing:
         args += ["--wing", wing]
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=WAKE_UP_TIMEOUT_SEC
-        )
-        if proc.returncode != 0:
-            return (
-                f"[palace wake-up] rc={proc.returncode}: "
-                f"{stderr.decode(errors='replace')[:400]}"
-            )
-        text = stdout.decode(errors="replace").strip()
+        rc, out, err = await _run_mempalace(args, timeout=WAKE_UP_TIMEOUT_SEC)
+        if rc != 0:
+            return f"[palace wake-up] rc={rc}: {err[:400]}"
+        text = out.strip()
         if text.startswith("Wake-up text"):
             text = text.split("\n", 1)[-1].lstrip("=").lstrip()
         return text or "[palace wake-up] empty output"
@@ -455,22 +507,12 @@ async def refresh_wake_up_cache() -> bool:
     out_path = _wake_up_file()
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        proc = await asyncio.create_subprocess_exec(
-            MEMPALACE_BIN, "wake-up",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=WAKE_UP_TIMEOUT_SEC
-        )
-        if proc.returncode != 0:
-            log.warning(
-                f"Wake-up refresh rc={proc.returncode}: "
-                f"{stderr.decode(errors='replace')[:400]}"
-            )
+        rc, out, err = await _run_mempalace(["wake-up"], timeout=WAKE_UP_TIMEOUT_SEC)
+        if rc != 0:
+            log.warning(f"Wake-up refresh rc={rc}: {err[:400]}")
             return False
-        out_path.write_text(stdout.decode(errors="replace"), encoding="utf-8")
-        log.info(f"Wake-up cache refreshed ({len(stdout)} bytes at {out_path})")
+        out_path.write_text(out, encoding="utf-8")
+        log.info(f"Wake-up cache refreshed ({len(out)} bytes at {out_path})")
         return True
     except asyncio.TimeoutError:
         log.warning(f"Wake-up refresh timed out after {WAKE_UP_TIMEOUT_SEC}s")
