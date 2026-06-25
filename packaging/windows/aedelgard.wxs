@@ -76,12 +76,18 @@
     <!-- IMMEDIATE kill, runs BEFORE InstallValidate. Immediate actions need no
          transaction (so no error 2762) and run early enough that the process is
          already gone when files-in-use detection runs -> the "close the app"
-         dialog never appears. The body runs in the user context (/RL LIMITED),
-         so an impersonated user-context taskkill reaches it. Return=ignore:
-         a not-running body (taskkill exit 128) must not fail the install. -->
+         dialog never appears. Uses the HIDDEN WixQuietExec immediate pattern
+         (NOT a raw ExeCommand, which pops a visible console — the "big terminal
+         window" seen during install). A SetProperty feeds the command into the
+         WixQuietExec64CmdLine property; the CA runs it windowlessly, impersonated
+         so it reaches the user-context body (/RL LIMITED). Return=ignore: a
+         not-running body (taskkill exit 128) must not fail the install. -->
+    <SetProperty Id="KillRunningBodyNow"
+                 Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM aedelgard-body.exe"
+                 Sequence="execute" Before="KillRunningBodyNow" />
     <CustomAction Id="KillRunningBodyNow"
-                  Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[System64Folder]taskkill.exe&quot; /F /IM aedelgard-body.exe"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec64"
                   Execute="immediate" Return="ignore" Impersonate="yes" />
 
     <!-- DEFERRED kill, runs inside the transaction just before file copy, as a
