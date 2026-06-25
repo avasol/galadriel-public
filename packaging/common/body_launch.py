@@ -28,6 +28,25 @@ from pathlib import Path
 
 log = logging.getLogger("aedelgard.body")
 
+import subprocess
+
+
+def _no_window_kwargs() -> dict:
+    """subprocess kwargs that fully suppress a console window on Windows.
+    On the frozen windowed body, ANY child (schtasks, the native-window child,
+    etc.) otherwise flashes a visible console. STARTUPINFO(SW_HIDE) +
+    CREATE_NO_WINDOW together is the combination that actually stays invisible;
+    either alone has proven insufficient. No-op on POSIX."""
+    if os.name != "nt":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return {
+        "startupinfo": si,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
+
 
 # ── 1. Per-OS user data dir ──────────────────────────────────────────────────
 def user_data_dir() -> Path:
@@ -501,10 +520,9 @@ def _autostart_desired() -> bool:
 
 
 def _logon_task_exists() -> bool:
-    import subprocess
     try:
         r = subprocess.run(["schtasks", "/Query", "/TN", _TASK_NAME],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, **_no_window_kwargs())
         return r.returncode == 0
     except Exception:
         return False
@@ -528,7 +546,7 @@ def _register_logon_task() -> None:
         "/F",
     ]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, **_no_window_kwargs())
         if r.returncode == 0:
             log.info("Registered per-user logon auto-start task %s", _TASK_NAME)
         else:
@@ -576,10 +594,7 @@ def _spawn_window_child(url: str) -> bool:
             args = [exe, "--window-only", "--url", url]
         else:
             args = [exe, os.path.abspath(__file__), "--window-only", "--url", url]
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.Popen(args, creationflags=creationflags, close_fds=True)
+        subprocess.Popen(args, close_fds=True, **_no_window_kwargs())
         log.info("Spawned native-window child for %s", url)
         return True
     except Exception as e:
