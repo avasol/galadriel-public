@@ -53,6 +53,7 @@ CONTEXT_WINDOW_OVERRIDES = {
     "claude-sonnet-4-5-1m": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-8": 1_000_000,
+    "claude-opus-4-6": 1_000_000,
 }
 
 WARN_TIER_ATTENTION = "attention"  # 90%
@@ -242,7 +243,7 @@ class GaladrielAgent:
             anthropic_client=None,
             api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),
         )
-        self.model = model or os.environ.get("AGENT_MODEL", "claude-opus-4-8")
+        self.model = model or os.environ.get("AGENT_MODEL", "claude-opus-4-6")
         self.max_tokens = max_tokens or int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
         self.memory = MemoryManager(config_dir=config_dir, memory_dir=memory_dir)
         self.working_dir = working_dir or os.getcwd()
