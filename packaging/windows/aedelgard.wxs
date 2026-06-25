@@ -42,10 +42,13 @@
          terminates; once it is gone the file copy succeeds with no reboot.
          REBOOT=ReallySuppress suppresses BOTH the mid-install FilesInUse
          "a reboot may be required" path and the end-of-install reboot prompt.
-         MSIRESTARTMANAGERCONTROL=Disable stops RestartManager from escalating
-         to a session restart it cannot perform without admin on Win11. -->
+         CloseApplication uses a HARD terminate (CloseMessage=no) because the
+         body has no Win32 message pump to answer WM_CLOSE/WM_QUERYENDSESSION —
+         asking politely just hung the installer waiting for an ack that never
+         came. NOTE: do NOT add MSIRESTARTMANAGERCONTROL=Disable here — it
+         removes RestartManager's safety valve and, with any close wait, wedges
+         the install. -->
     <Property Id="REBOOT" Value="ReallySuppress" />
-    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
 
     <!-- Add/Remove Programs metadata. -->
     <Property Id="ARPCOMMENTS" Value="Your Aedelgard mind, running locally on your own machine." />
@@ -69,11 +72,10 @@
     <util:CloseApplication
         Id="CloseRunningBody"
         Target="aedelgard-body.exe"
-        CloseMessage="yes"
-        Timeout="10"
+        CloseMessage="no"
         TerminateProcess="1"
         RebootPrompt="no"
-        EndSessionMessage="yes" />
+        EndSessionMessage="no" />
 
     <!-- Start Menu folder + shortcut. -->
     <StandardDirectory Id="ProgramMenuFolder">
