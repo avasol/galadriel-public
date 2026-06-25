@@ -541,6 +541,36 @@ def _maybe_self_register_autostart() -> None:
 # (Flask/Werkzeug's dev server needs main-thread signal ownership to stay up;
 # running it two levels deep in daemon threads is what caused the silent
 # exit-after-first-request death). The tray runs in a background thread.
+def _spawn_window_child(url: str) -> bool:
+    """Spawn a lightweight child of THIS executable in --window-only mode, which
+    opens a native pywebview window onto the already-running localhost server.
+
+    Why a child process: pywebview.start() requires ownership of a main thread,
+    and the parent's main thread is held by the harness. A child gets its own
+    main thread for the GUI loop — a real app window (WebView2 on Windows), no
+    browser, no contention. Returns True if the child was launched.
+    """
+    if os.name == "nt" and not _webview2_runtime_present():
+        return False  # no native backend -> caller falls back to browser
+    try:
+        import subprocess
+        exe = sys.executable
+        # Frozen: re-launch the body exe with the flag. Dev: re-run this module.
+        if getattr(sys, "frozen", False):
+            args = [exe, "--window-only", "--url", url]
+        else:
+            args = [exe, os.path.abspath(__file__), "--window-only", "--url", url]
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(args, creationflags=creationflags, close_fds=True)
+        log.info("Spawned native-window child for %s", url)
+        return True
+    except Exception as e:
+        log.warning("Could not spawn native-window child (%s); using browser.", e)
+        return False
+
+
 def run_tray(url: str, icon_path: "Path | None", stop_cb) -> bool:
     """Show a system-tray icon. Returns True if the tray loop started (it then
     blocks in this thread until quit), False if pystray/Pillow is unavailable
@@ -563,6 +593,14 @@ def run_tray(url: str, icon_path: "Path | None", stop_cb) -> bool:
         image = _I.new("RGBA", (64, 64), (40, 30, 70, 255))
 
     def _open(icon, item):
+        # Open a real NATIVE app window (WebView2), not the system browser.
+        # pywebview must own a main thread, and THIS process's main thread
+        # belongs to the harness — so we spawn a lightweight child instance in
+        # --window-only mode that just paints a window onto the already-running
+        # localhost server. Falls back to the browser if the spawn fails or no
+        # native backend is available.
+        if _spawn_window_child(url):
+            return
         try:
             webbrowser.open(url)
         except Exception:
@@ -586,6 +624,32 @@ def run_tray(url: str, icon_path: "Path | None", stop_cb) -> bool:
 
 
 def main() -> None:
+    # --window-only: a child instance spawned by the tray's "Open". We do NOT
+    # start a harness or touch the environment — the server is already running
+    # in the parent. We just paint a native window onto it on OUR main thread
+    # (which pywebview requires) and exit when the user closes it.
+    if "--window-only" in sys.argv:
+        _setup_file_logging()
+        win_url = None
+        argv = sys.argv[1:]
+        for i, a in enumerate(argv):
+            if a == "--url" and i + 1 < len(argv):
+                win_url = argv[i + 1]
+            elif a.startswith("--url="):
+                win_url = a.split("=", 1)[1]
+        if not win_url:
+            port = os.environ.get("TOWER_PORT", "8080")
+            win_url = f"http://127.0.0.1:{port}/chat"
+        icon = resource_root() / "packaging" / "common" / "icon_render" / "aedelgard.png"
+        log.info("Window-only child: painting native window onto %s", win_url)
+        if not open_native_window(win_url, icon_path=icon):
+            # Native backend failed — fall back so the click still does something.
+            try:
+                webbrowser.open(win_url)
+            except Exception:
+                pass
+        return
+
     log_path = _setup_file_logging()
     logon_mode = "--logon" in sys.argv  # auto-started at logon: stay silent
     log.info("Aedelgard body launching%s (log: %s)",
@@ -678,20 +742,25 @@ def main() -> None:
         else:
             try_native = native_optin
 
+        # Native window: spawn it as a CHILD process (its own main thread for
+        # the GUI loop), not on this presence thread — pywebview needs a main
+        # thread and ours is the harness's. The child paints a real WebView2
+        # window; if it can't, the tray "Open" still works as a fallback.
+        opened_window = False
         if try_native:
-            try:
-                if open_native_window(url, icon_path=icon_master):
-                    return  # genuine window opened + closed -> presence done
-            except Exception as e:
-                log.warning("Native window raised (%s); using system browser.", e)
+            opened_window = _spawn_window_child(url)
 
-        # Browser + tray: open the chat once, then hold a visible tray presence
-        # so a running body is never mistaken for a dead one again.
-        log.info("Opening Aedelgard in your default browser.")
-        try:
-            webbrowser.open(url)
-        except Exception:
-            log.info("Open your browser to %s", url)
+        # If no native window, open the chat in the browser once so the user
+        # sees something immediately.
+        if not opened_window:
+            log.info("Opening Aedelgard in your default browser.")
+            try:
+                webbrowser.open(url)
+            except Exception:
+                log.info("Open your browser to %s", url)
+
+        # Always hold a visible tray presence so a running body is never
+        # mistaken for a dead one — and so "Open" can re-summon the window.
         if not run_tray(url, tray_icon, _stop_everything):
             log.info("No tray available — body running headless on %s.", url)
 

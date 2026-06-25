@@ -37,6 +37,16 @@
 
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- Never demand a reboot for a re-install over the running body. The only
+         lock is our own process (the localhost app), which CloseApplication
+         terminates; once it is gone the file copy succeeds with no reboot.
+         REBOOT=ReallySuppress suppresses BOTH the mid-install FilesInUse
+         "a reboot may be required" path and the end-of-install reboot prompt.
+         MSIRESTARTMANAGERCONTROL=Disable stops RestartManager from escalating
+         to a session restart it cannot perform without admin on Win11. -->
+    <Property Id="REBOOT" Value="ReallySuppress" />
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
+
     <!-- Add/Remove Programs metadata. -->
     <Property Id="ARPCOMMENTS" Value="Your Aedelgard mind, running locally on your own machine." />
     <!-- Always-on default ON. Override at install with AEDELGARD_AUTOSTART=0. -->
@@ -122,6 +132,10 @@
                   Execute="deferred" Return="ignore" Impersonate="no" />
     <InstallExecuteSequence>
       <Custom Action="RemoveLogonTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <!-- Terminate the running body BEFORE costing/file-in-use checks so the
+           re-install never escalates to a reboot. WixCloseApplications is the
+           action util:CloseApplication generates. -->
+      <Custom Action="WixCloseApplications" Before="InstallValidate" />
     </InstallExecuteSequence>
   </Package>
 
