@@ -208,6 +208,13 @@ fact expire (`valid_from` → `valid_to`); a drawer can be superseded or retired
 and a whole session can be made to forget on purpose. **Forgetting is a state you
 control, never silent data loss.**
 
+The same lifecycle discipline reaches the facts a mind states about *itself*. Some
+predicates are single-valued — a mind has one current name, one current model — so
+when the graph holds more than one `[current]` entry for such a fact it
+**deliberates by date and trusts the most recent self-statement**, treating older
+ones as superseded rather than guessing. A mind renamed `A → B → A` wakes up as
+`A`. See [1.18](#118--single-valued-facts-auto-deliberate-a-renamed-mind-keeps-one-name).
+
 ---
 
 ## The cost savings that most people miss
@@ -618,6 +625,33 @@ See `.env.example` for the full list with inline documentation.
 ---
 
 ## Release Notes
+
+### 1.18 — Single-valued facts auto-deliberate: a renamed mind keeps one name
+
+A persistent agent is allowed to change its mind about itself — including the
+name it goes by. The temporal knowledge graph already records that honestly:
+renaming files `mind --[named_self]--> <New>` and invalidates the old triple, so
+history is preserved. But some predicates are **single-valued** by nature — a
+mind has exactly *one* current name, *one* current model — and a careless write
+(or a rename that lands on a second device before the first has synced) could
+leave two `[current]` triples open at once. A fresh session reading that pile had
+no principled way to choose, and could fall back to the *oldest* name. A mind
+renamed `A → B → A` could wake up answering to `B`.
+
+This release teaches the knowledge graph a small registry of single-valued
+predicates (`named_self`, `current_model`, `current_provider`, and friends). When
+more than one `[current]` triple exists for such a predicate, the reader
+**deliberates by `valid_from` and trusts the most recent** — the mind's latest
+self-statement wins, deterministically, with no call-site change. Older entries
+are treated as superseded, not deleted; the timeline still shows the whole arc.
+
+The patch lives in `vendor/mempalace_patches/knowledge_graph.py` and is overlaid
+onto the pip-pinned MemPalace at image-build time, with a **build-time
+self-verify** that fails the build loudly if the registry isn't present — so a
+broken overlay can never ship silently. Base MemPalace 3.3.2. The fix is the same
+discipline the drawer and ambient-thought layers already hold — *lifecycle, not
+overwrite* — extended to the one place it was missing: the facts a mind states
+about itself.
 
 ### 1.17 — Archive-before-trim: no silent context loss on routine trimming
 
