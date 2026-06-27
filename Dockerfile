@@ -44,6 +44,17 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
     && rm -rf /wheels
 
+# ── LOCAL MEMPALACE PATCH (overlay onto the pinned pip package) ─────────────
+# Restated-fact date deliberator (single-valued predicates: named_self, etc).
+# Kept in vendor/mempalace_patches until upstreamed. Build-time self-verify.
+COPY vendor/mempalace_patches/knowledge_graph.py /tmp/kg_patch.py
+RUN python -c "import mempalace, os, shutil; \
+    dst=os.path.join(os.path.dirname(mempalace.__file__),'knowledge_graph.py'); \
+    shutil.copyfile('/tmp/kg_patch.py', dst); print('mempalace patched at', dst)" \
+    && python -c "from mempalace.knowledge_graph import SINGLE_VALUED_PREDICATES as s; \
+    assert 'named_self' in s; print('deliberator overlay verified:', sorted(s))"
+# ───────────────────────────────────────────────────────────────────────────
+
 # Application code. .dockerignore keeps keys/, .env, memory logs and bloat out.
 COPY . .
 RUN chown -R galadriel:galadriel /app /data
