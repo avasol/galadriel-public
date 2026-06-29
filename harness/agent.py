@@ -125,6 +125,142 @@ def _contains_tool_result(msg: dict) -> bool:
     )
 
 
+
+def _sanitize_tool_pairs(messages: list) -> int:
+    """Repair orphaned tool_use blocks so the message list is always API-valid.
+
+    The Anthropic API requires every assistant `tool_use` block to be answered
+    by a `tool_result` block (same id) in the IMMEDIATELY following user
+    message. If a turn crashes mid-cascade — the assistant tool_use message is
+    persisted but the tool_result message never gets appended — the channel
+    history is left poisoned, and EVERY subsequent turn 400s with
+    "tool_use ids were found without tool_result blocks".
+
+    This walks the list and guarantees the invariant by synthesizing error
+    tool_results for any orphaned tool_use id:
+      - if the next message is a tool_result user message missing some ids,
+        the missing ones are appended to it.
+      - if the next message is NOT a tool_result user message (or there is no
+        next message — orphan at the tail), a synthetic user tool_result
+        message is inserted right after the assistant message.
+
+    Mutates `messages` in place. Returns the number of repairs made (0 = the
+    list was already valid). Cheap, idempotent, runs before every API call.
+    """
+    repairs = 0
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.get("role") != "assistant" or not _contains_tool_use(msg):
+            i += 1
+            continue
+
+        # Collect the tool_use ids this assistant message demands answers for.
+        wanted_ids = [
+            b["id"]
+            for b in msg["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id")
+        ]
+
+        nxt = messages[i + 1] if i + 1 < len(messages) else None
+        if nxt is not None and nxt.get("role") == "user" and _contains_tool_result(nxt):
+            # Next message answers SOME ids; fill in any that are missing.
+            answered = {
+                b.get("tool_use_id")
+                for b in nxt["content"]
+                if isinstance(b, dict) and b.get("type") == "tool_result"
+            }
+            for tid in wanted_ids:
+                if tid not in answered:
+                    nxt["content"].append({
+                        "type": "tool_result",
+                        "tool_use_id": tid,
+                        "content": "[recovered] This tool call did not complete "
+                                   "(the turn was interrupted). No result was captured.",
+                        "is_error": True,
+                    })
+                    repairs += 1
+        else:
+            # No tool_result message follows — orphan. Insert a synthetic one.
+            synthetic = {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tid,
+                        "content": "[recovered] This tool call did not complete "
+                                   "(the turn was interrupted). No result was captured.",
+                        "is_error": True,
+                    }
+                    for tid in wanted_ids
+                ],
+            }
+            messages.insert(i + 1, synthetic)
+            repairs += len(wanted_ids)
+        i += 1
+
+    return repairs
+
+
+def _strip_orphan_tool_results(messages: list) -> int:
+    """Repair the REVERSE orphan: a user ``tool_result`` block whose matching
+    ``tool_use`` is absent from the immediately-preceding assistant message.
+
+    The Anthropic API rejects this with::
+
+        messages.N.content.K: unexpected tool_use_id found in tool_result
+        blocks: <id>. Each tool_result block must have a corresponding
+        tool_use block in the previous message.
+
+    This happens when history trimming or an interrupted/rebuilt cascade drops
+    (or reorders) the parent assistant ``tool_use`` message while its child
+    ``tool_result`` survives. ``_sanitize_tool_pairs`` only fixes the forward
+    direction (tool_use without tool_result); this fixes the reverse.
+
+    For each user message containing tool_result blocks, we compute the set of
+    valid parent ids = the tool_use ids in the IMMEDIATELY-preceding assistant
+    message. Any tool_result whose id is not in that set is an orphan and is
+    removed. If stripping empties the message, the message itself is dropped.
+
+    Mutates ``messages`` in place. Returns the number of orphan tool_result
+    blocks removed (0 = already valid). Cheap, idempotent.
+    """
+    removed = 0
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.get("role") != "user" or not _contains_tool_result(msg):
+            i += 1
+            continue
+
+        prev = messages[i - 1] if i > 0 else None
+        valid_ids = set()
+        if prev is not None and prev.get("role") == "assistant":
+            for b in prev.get("content", []):
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
+                    valid_ids.add(b["id"])
+
+        content = msg.get("content", [])
+        kept = []
+        for b in content:
+            if (
+                isinstance(b, dict)
+                and b.get("type") == "tool_result"
+                and b.get("tool_use_id") not in valid_ids
+            ):
+                removed += 1
+                continue
+            kept.append(b)
+
+        if not kept:
+            # Whole message was orphan tool_results — drop it entirely.
+            messages.pop(i)
+            continue
+        msg["content"] = kept
+        i += 1
+
+    return removed
+
 def _build_cached_tools() -> list[dict]:
     """Attach cache_control to the last tool so the tools prefix gets cached.
 
@@ -559,6 +695,27 @@ class GaladrielAgent:
             if not messages:
                 log.error("Message list is empty — cannot call API. Seeding with user message.")
                 messages.append({"role": "user", "content": user_message})
+
+            # Self-heal: guarantee every tool_use has a following tool_result
+            # before we ever call the API. Repairs channels poisoned by a turn
+            # that crashed mid-cascade (the recurring "tool_use ids ... without
+            # tool_result" 400). Idempotent and cheap; runs on every call.
+            repaired = _sanitize_tool_pairs(messages)
+            if repaired:
+                log.warning(
+                    f"_sanitize_tool_pairs: repaired {repaired} orphaned tool_use "
+                    f"block(s) before API call (channel={channel_id})"
+                )
+
+            # Self-heal the REVERSE orphan: a tool_result whose parent tool_use
+            # was dropped (history trim / rebuilt cascade). This is the
+            # "unexpected tool_use_id found in tool_result blocks" 400.
+            stripped = _strip_orphan_tool_results(messages)
+            if stripped:
+                log.warning(
+                    f"_strip_orphan_tool_results: removed {stripped} orphan "
+                    f"tool_result block(s) before API call (channel={channel_id})"
+                )
 
             log.info(f"API call with {len(messages)} messages, last role: {messages[-1]['role']}")
             # Attach cache_control to the last block of the last message.
