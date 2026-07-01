@@ -90,10 +90,21 @@ def main():
     from harness.scheduler import Scheduler
     from harness.job_watcher import JobWatcher
 
+    # The body runs on the user's own machine, so red-tier (destructive)
+    # commands ask the human at the keyboard rather than block forever. The
+    # service (non-body) keeps approval_callback=None, which the agent loop
+    # treats as fail-closed (red commands are refused). Either way, a
+    # destructive command never runs unattended.
+    approval_callback = None
+    if os.environ.get("GALADRIEL_BODY") == "1":
+        from harness.local_approval import console_approval
+        approval_callback = console_approval
+
     agent = GaladrielAgent(
         config_dir=config_dir,
         memory_dir=memory_dir,
         working_dir=base_dir,
+        approval_callback=approval_callback,
     )
     log.info(f"Agent initialized (model: {agent.model})")
 
