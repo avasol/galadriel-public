@@ -26,6 +26,7 @@ Environment overrides:
 
 import asyncio
 import logging
+import random
 import os
 import sys
 from datetime import datetime
@@ -152,6 +153,7 @@ def search(
     room: str | None = None,
     hall: str | None = None,
     k: int = 5,
+    include_stale: bool = False,
 ) -> str:
     """Semantic search over the palace. Returns a markdown-formatted string
     ready to be handed back as a tool result.
@@ -189,6 +191,11 @@ def search(
             drawers = []
             for i, doc in enumerate((res.get("documents") or [[]])[0]):
                 md = (res.get("metadatas") or [[]])[0][i] if res.get("metadatas") else {}
+                # LIVING-MEMORY: drop non-active drawers from normal recall
+                # (parity with /chat). Unstamped drawers read as active.
+                _ls = (md or {}).get("lifecycle_status", "active")
+                if not include_stale and _ls and _ls != "active":
+                    continue
                 dist = (res.get("distances") or [[]])[0][i] if res.get("distances") else None
                 drawers.append({
                     "text": doc,
@@ -413,6 +420,9 @@ async def add_drawer(
     topic: str | None = None,
     wing: str = DEFAULT_WING,
     room: str | None = None,
+    origin: str = "observation",
+    confidence: float = 1.0,
+    session_id: str | None = None,
 ) -> str:
     """File a verbatim drawer into the palace immediately.
 
@@ -447,6 +457,13 @@ async def add_drawer(
         header.append(f"- room: {room}")
     if topic:
         header.append(f"- topic: {topic}")
+    # LIVING-MEMORY (ported to body 2026-07-02): provenance directives the
+    # miner reads so drawers carry origin + confidence + session, exactly as
+    # the /chat surface files them (memory parity, both surfaces).
+    header.append(f"- origin: {origin}")
+    header.append(f"- confidence: {confidence}")
+    if session_id:
+        header.append(f"- session: {session_id}")
     header.append("")
     header.append("---")
     header.append("")
@@ -470,6 +487,165 @@ async def add_drawer(
         + f", path={fname}"
     )
 
+
+# ── LIVING-MEMORY EXTENSION (ported from the /chat harness to the body,
+#    2026-07-02, for memory parity across both surfaces) ──
+# Drawer lifecycle: supersede (correct + retire old) and retire (forget-with-
+# a-trace). Both update ChromaDB metadata in place — no re-embedding — mirroring
+# the knowledge-graph invalidate pattern. Body-local (no HQ short-circuit): the
+# body always operates on its own local palace.
+
+
+def _drawers_collection():
+    """Get the drawers ChromaDB collection, or None if no palace."""
+    try:
+        from mempalace.backends.chroma import ChromaBackend
+        backend = ChromaBackend()
+        return backend.get_collection(_palace_path(), "mempalace_drawers")
+    except Exception as e:
+        log.warning(f"Could not open drawers collection: {e}")
+        return None
+
+
+def random_drawer(max_chars: int = 600) -> dict | None:
+    """Return one uniformly-random *active* drawer: {topic, room, text}.
+
+    Read-only. Returns None if the palace is empty/unavailable. Used by the
+    dreaming reflection as a forced-adjacency stimulus; never writes or prunes.
+    """
+    col = _drawers_collection()
+    if not col:
+        return None
+    try:
+        meta = col.get(include=["metadatas"])
+        ids = meta.get("ids") or []
+        metas = meta.get("metadatas") or []
+        if not ids:
+            return None
+        active = [
+            (i, m or {}) for i, m in zip(ids, metas)
+            if (m or {}).get("lifecycle_status", "active") == "active"
+        ]
+        if not active:
+            return None
+        did, dmeta = random.choice(active)
+        doc = col.get(ids=[did], include=["documents"])
+        text = ((doc.get("documents") or [""])[0] or "").strip()
+        return {
+            "topic": dmeta.get("topic") or dmeta.get("hall") or "?",
+            "room": dmeta.get("room", "?"),
+            "text": text[:max_chars],
+        }
+    except Exception as e:
+        log.warning(f"random_drawer failed: {e}")
+        return None
+
+
+def _find_drawer_ids_by_query(query: str, n: int = 3) -> list[dict]:
+    """Find candidate drawers by semantic match. Returns [{id, preview, status}]."""
+    col = _drawers_collection()
+    if not col:
+        return []
+    try:
+        res = col.query(
+            query_texts=[query], n_results=n,
+            include=["documents", "metadatas"],
+        )
+        ids = (res.get("ids") or [[]])[0]
+        docs = (res.get("documents") or [[]])[0]
+        metas = (res.get("metadatas") or [[]])[0]
+        out = []
+        for i, d, m in zip(ids, docs, metas):
+            m = m or {}
+            out.append({
+                "id": i,
+                "preview": (d or "")[:160],
+                "status": m.get("lifecycle_status", "active"),
+            })
+        return out
+    except Exception as e:
+        log.warning(f"drawer lookup failed: {e}")
+        return []
+
+
+def _set_drawer_status(drawer_id: str, status: str, extra: dict | None = None) -> bool:
+    """Update one drawer's lifecycle_status (+optional extra metadata) in place."""
+    col = _drawers_collection()
+    if not col:
+        return False
+    try:
+        cur = col.get(ids=[drawer_id], include=["metadatas"])
+        metas = cur.get("metadatas") or []
+        if not metas:
+            return False
+        meta = dict(metas[0] or {})
+        meta["lifecycle_status"] = status
+        meta["lifecycle_changed_at"] = datetime.now().isoformat()
+        if extra:
+            meta.update({k: v for k, v in extra.items() if v is not None})
+        col.update(ids=[drawer_id], metadatas=[meta])
+        return True
+    except Exception as e:
+        log.warning(f"set_drawer_status failed: {e}")
+        return False
+
+
+async def supersede_drawer(
+    old_query: str,
+    new_content: str,
+    topic: str | None = None,
+    wing: str = DEFAULT_WING,
+    room: str | None = None,
+    invalidate_kg: tuple | None = None,
+) -> str:
+    """File a corrected drawer and mark the old one superseded.
+
+    `old_query` semantically identifies the drawer being replaced — the best
+    match is marked `superseded` and back-linked to the new drawer.
+    `invalidate_kg` optionally = (subject, predicate, object) to invalidate the
+    matching knowledge-graph triple in the same gesture (cross-layer
+    consistency).
+    """
+    candidates = _find_drawer_ids_by_query(old_query, n=1)
+    filed = await add_drawer(
+        content=new_content, topic=topic, wing=wing, room=room,
+        origin="correction", confidence=1.0,
+    )
+    old_marked = "no prior drawer matched"
+    if candidates:
+        old_id = candidates[0]["id"]
+        if _set_drawer_status(old_id, "superseded", {"superseded_at": datetime.now().isoformat()}):
+            old_marked = f"superseded old drawer {old_id[:32]} ({candidates[0]['preview'][:60]}...)"
+    kg_note = ""
+    if invalidate_kg and len(invalidate_kg) == 3:
+        try:
+            kg_invalidate(*invalidate_kg)
+            kg_note = f" | KG triple invalidated: {invalidate_kg[0]} -[{invalidate_kg[1]}]-> {invalidate_kg[2]}"
+        except Exception as e:
+            kg_note = f" | KG invalidate failed: {e}"
+    return f"{filed}\n  ↳ {old_marked}{kg_note}"
+
+
+async def retire_drawer(old_query: str, reason: str) -> str:
+    """Retire a drawer to `historical` — forgetting that leaves a trace.
+
+    Removed from active recall but kept for audit. `old_query` semantically
+    identifies the drawer to retire.
+    """
+    candidates = _find_drawer_ids_by_query(old_query, n=3)
+    if not candidates:
+        return f"[retire] no drawer matched: {old_query[:80]}"
+    target = candidates[0]
+    ok = _set_drawer_status(
+        target["id"], "historical",
+        {"retired_reason": reason, "retired_at": datetime.now().isoformat()},
+    )
+    if not ok:
+        return f"[retire] failed to update drawer {target['id'][:32]}"
+    return f"Retired to history: {target['id'][:32]} ({target['preview'][:60]}...) — reason: {reason}"
+
+
+# ── END LIVING-MEMORY EXTENSION ──
 
 async def wake_up(wing: str | None = None) -> str:
     """Fetch a fresh wake-up snapshot (on-demand tool).

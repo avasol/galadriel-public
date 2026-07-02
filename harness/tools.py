@@ -105,6 +105,10 @@ TOOL_DEFINITIONS = [
                     "type": "integer",
                     "description": "Number of results (default 5, max 20).",
                 },
+                "include_stale": {
+                    "type": "boolean",
+                    "description": "Include stale/superseded/historical drawers (default false — non-active memories are hidden from normal recall).",
+                },
             },
             "required": ["query"],
         },
@@ -145,8 +149,65 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Wing to file under (default 'agent').",
                 },
+                "origin": {
+                    "type": "string",
+                    "description": (
+                        "Kind of memory, for credibility weighting: decision | "
+                        "observation | correction | code_change | reflection. "
+                        "Default observation."
+                    ),
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": (
+                        "Self-assessed truth confidence 0-1. 1.0 = verified "
+                        "decision/fact; ~0.6 = hedged observation. Default 1.0."
+                    ),
+                },
             },
             "required": ["content"],
+        },
+    },
+    {
+        "name": "palace_supersede_drawer",
+        "description": (
+            "Correct a memory: file a replacement drawer AND mark the old one "
+            "`superseded` so it stops surfacing in normal recall (history is "
+            "kept). Use when a previously-filed fact is now wrong or outdated. "
+            "Identify the old drawer semantically via `old_query`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "old_query": {
+                    "type": "string",
+                    "description": "Semantic description of the drawer being replaced (best match is superseded).",
+                },
+                "new_content": {
+                    "type": "string",
+                    "description": "The corrected verbatim content to file as the replacement.",
+                },
+                "topic": {"type": "string", "description": "Optional topic slug for the new drawer."},
+                "room": {"type": "string", "description": "Optional room for the new drawer."},
+            },
+            "required": ["old_query", "new_content"],
+        },
+    },
+    {
+        "name": "palace_retire_drawer",
+        "description": (
+            "Forget a memory deliberately, leaving a trace: mark a drawer "
+            "`historical` so it is removed from active recall but kept for audit. "
+            "Use for memories no longer relevant but that shouldn't be lost. "
+            "Forgetting as a feature, not silent data loss."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "old_query": {"type": "string", "description": "Semantic description of the drawer to retire."},
+                "reason": {"type": "string", "description": "Why this memory is being retired (kept in the audit trail)."},
+            },
+            "required": ["old_query", "reason"],
         },
     },
     {
@@ -291,6 +352,7 @@ _PALACE_TOOL_NAMES = frozenset({
     "palace_search", "palace_add_drawer", "palace_wake_up", "palace_taxonomy",
     "palace_kg_add", "palace_kg_query", "palace_kg_invalidate",
     "palace_kg_timeline", "palace_diary_write", "palace_diary_read",
+    "palace_supersede_drawer", "palace_retire_drawer",
 })
 
 
@@ -334,6 +396,7 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
                 room=inputs.get("room"),
                 hall=inputs.get("hall"),
                 k=inputs.get("k", 5),
+                include_stale=inputs.get("include_stale", False),
             ),
         )
     elif name == "palace_add_drawer":
@@ -343,6 +406,22 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
             topic=inputs.get("topic"),
             wing=inputs.get("wing", "agent"),
             room=inputs.get("room"),
+            origin=inputs.get("origin", "observation"),
+            confidence=inputs.get("confidence", 1.0),
+        )
+    elif name == "palace_supersede_drawer":
+        from . import palace
+        return await palace.supersede_drawer(
+            old_query=inputs["old_query"],
+            new_content=inputs["new_content"],
+            topic=inputs.get("topic"),
+            room=inputs.get("room"),
+        )
+    elif name == "palace_retire_drawer":
+        from . import palace
+        return await palace.retire_drawer(
+            old_query=inputs["old_query"],
+            reason=inputs.get("reason", ""),
         )
     elif name == "palace_wake_up":
         from . import palace
