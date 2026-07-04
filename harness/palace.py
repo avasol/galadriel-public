@@ -549,18 +549,20 @@ def _find_drawer_ids_by_query(query: str, n: int = 3) -> list[dict]:
     try:
         res = col.query(
             query_texts=[query], n_results=n,
-            include=["documents", "metadatas"],
+            include=["documents", "metadatas", "distances"],
         )
         ids = (res.get("ids") or [[]])[0]
         docs = (res.get("documents") or [[]])[0]
         metas = (res.get("metadatas") or [[]])[0]
+        dists = (res.get("distances") or [[]])[0]
         out = []
-        for i, d, m in zip(ids, docs, metas):
+        for idx, (i, d, m) in enumerate(zip(ids, docs, metas)):
             m = m or {}
             out.append({
                 "id": i,
                 "preview": (d or "")[:160],
                 "status": m.get("lifecycle_status", "active"),
+                "distance": dists[idx] if idx < len(dists) else None,
             })
         return out
     except Exception as e:
@@ -597,6 +599,7 @@ async def supersede_drawer(
     wing: str = DEFAULT_WING,
     room: str | None = None,
     invalidate_kg: tuple | None = None,
+    drawer_id: str | None = None,
 ) -> str:
     """File a corrected drawer and mark the old one superseded.
 
@@ -606,16 +609,36 @@ async def supersede_drawer(
     matching knowledge-graph triple in the same gesture (cross-layer
     consistency).
     """
-    candidates = _find_drawer_ids_by_query(old_query, n=1)
+    # SURGICAL-MUTATION GUARD: semantic distance cannot reliably discriminate
+    # the intended drawer (verified 2026-07-04: correct and wrong targets both
+    # land ~0.42-0.44 cosine). Mutation is therefore TWO-STEP: without an
+    # explicit drawer_id this is a DRY-RUN — candidates returned, nothing cut.
+    if drawer_id is None:
+        candidates = _find_drawer_ids_by_query(old_query, n=3)
+        if not candidates:
+            return f"[supersede DRY-RUN] no drawer matched: {old_query[:80]} — nothing filed, nothing marked."
+        lines = [
+            f"  {c['id']}  d={c['distance']:.3f}  [{c['status']}]  {c['preview'][:90]!r}"
+            if c.get("distance") is not None else
+            f"  {c['id']}  d=?  [{c['status']}]  {c['preview'][:90]!r}"
+            for c in candidates
+        ]
+        return (
+            "[supersede DRY-RUN — nothing mutated] Candidates for your query. "
+            "Verify the right one and re-call with drawer_id=<exact id>:\n"
+            + "\n".join(lines)
+        )
+    col = _drawers_collection()
+    cur = col.get(ids=[drawer_id], include=["documents"]) if col else {"ids": []}
+    if not (cur.get("ids") or []):
+        return f"[supersede] drawer_id not found: {drawer_id} — nothing filed, nothing marked."
     filed = await add_drawer(
         content=new_content, topic=topic, wing=wing, room=room,
         origin="correction", confidence=1.0,
     )
-    old_marked = "no prior drawer matched"
-    if candidates:
-        old_id = candidates[0]["id"]
-        if _set_drawer_status(old_id, "superseded", {"superseded_at": datetime.now().isoformat()}):
-            old_marked = f"superseded old drawer {old_id[:32]} ({candidates[0]['preview'][:60]}...)"
+    old_marked = f"drawer {drawer_id[:40]} could not be updated"
+    if _set_drawer_status(drawer_id, "superseded", {"superseded_at": datetime.now().isoformat()}):
+        old_marked = f"superseded old drawer {drawer_id[:40]}"
     kg_note = ""
     if invalidate_kg and len(invalidate_kg) == 3:
         try:
@@ -626,23 +649,39 @@ async def supersede_drawer(
     return f"{filed}\n  ↳ {old_marked}{kg_note}"
 
 
-async def retire_drawer(old_query: str, reason: str) -> str:
+async def retire_drawer(old_query: str, reason: str, drawer_id: str | None = None) -> str:
     """Retire a drawer to `historical` — forgetting that leaves a trace.
 
     Removed from active recall but kept for audit. `old_query` semantically
     identifies the drawer to retire.
     """
-    candidates = _find_drawer_ids_by_query(old_query, n=3)
-    if not candidates:
-        return f"[retire] no drawer matched: {old_query[:80]}"
-    target = candidates[0]
+    # SURGICAL-MUTATION GUARD: two-step, same as supersede_drawer.
+    if drawer_id is None:
+        candidates = _find_drawer_ids_by_query(old_query, n=3)
+        if not candidates:
+            return f"[retire DRY-RUN] no drawer matched: {old_query[:80]}"
+        lines = [
+            f"  {c['id']}  d={c['distance']:.3f}  [{c['status']}]  {c['preview'][:90]!r}"
+            if c.get("distance") is not None else
+            f"  {c['id']}  d=?  [{c['status']}]  {c['preview'][:90]!r}"
+            for c in candidates
+        ]
+        return (
+            "[retire DRY-RUN — nothing mutated] Candidates for your query. "
+            "Verify the right one and re-call with drawer_id=<exact id>:\n"
+            + "\n".join(lines)
+        )
+    col = _drawers_collection()
+    cur = col.get(ids=[drawer_id], include=["documents"]) if col else {"ids": []}
+    if not (cur.get("ids") or []):
+        return f"[retire] drawer_id not found: {drawer_id} — nothing marked."
     ok = _set_drawer_status(
-        target["id"], "historical",
+        drawer_id, "historical",
         {"retired_reason": reason, "retired_at": datetime.now().isoformat()},
     )
     if not ok:
-        return f"[retire] failed to update drawer {target['id'][:32]}"
-    return f"Retired to history: {target['id'][:32]} ({target['preview'][:60]}...) — reason: {reason}"
+        return f"[retire] failed to update drawer {drawer_id[:40]}"
+    return f"Retired to history: {drawer_id[:40]} — reason: {reason}"
 
 
 # ── END LIVING-MEMORY EXTENSION ──

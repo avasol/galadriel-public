@@ -174,7 +174,9 @@ TOOL_DEFINITIONS = [
             "Correct a memory: file a replacement drawer AND mark the old one "
             "`superseded` so it stops surfacing in normal recall (history is "
             "kept). Use when a previously-filed fact is now wrong or outdated. "
-            "Identify the old drawer semantically via `old_query`."
+            "Identify the old drawer semantically via `old_query`. TWO-STEP SAFETY: "
+            "without `drawer_id` this is a DRY-RUN that returns candidates and mutates "
+            "NOTHING — inspect them, then re-call with the exact `drawer_id`."
         ),
         "input_schema": {
             "type": "object",
@@ -189,6 +191,7 @@ TOOL_DEFINITIONS = [
                 },
                 "topic": {"type": "string", "description": "Optional topic slug for the new drawer."},
                 "room": {"type": "string", "description": "Optional room for the new drawer."},
+                "drawer_id": {"type": "string", "description": "Exact drawer id to supersede (from the dry-run). Without it, nothing is mutated."},
             },
             "required": ["old_query", "new_content"],
         },
@@ -199,13 +202,16 @@ TOOL_DEFINITIONS = [
             "Forget a memory deliberately, leaving a trace: mark a drawer "
             "`historical` so it is removed from active recall but kept for audit. "
             "Use for memories no longer relevant but that shouldn't be lost. "
-            "Forgetting as a feature, not silent data loss."
+            "Forgetting as a feature, not silent data loss. TWO-STEP SAFETY: without "
+            "`drawer_id` this is a DRY-RUN that returns candidates and mutates NOTHING — "
+            "inspect them, then re-call with the exact `drawer_id`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "old_query": {"type": "string", "description": "Semantic description of the drawer to retire."},
                 "reason": {"type": "string", "description": "Why this memory is being retired (kept in the audit trail)."},
+                "drawer_id": {"type": "string", "description": "Exact drawer id to retire (from the dry-run). Without it, nothing is mutated."},
             },
             "required": ["old_query", "reason"],
         },
@@ -416,12 +422,14 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
             new_content=inputs["new_content"],
             topic=inputs.get("topic"),
             room=inputs.get("room"),
+            drawer_id=inputs.get("drawer_id"),
         )
     elif name == "palace_retire_drawer":
         from . import palace
         return await palace.retire_drawer(
             old_query=inputs["old_query"],
             reason=inputs.get("reason", ""),
+            drawer_id=inputs.get("drawer_id"),
         )
     elif name == "palace_wake_up":
         from . import palace
