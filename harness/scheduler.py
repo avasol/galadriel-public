@@ -79,6 +79,7 @@ class Scheduler:
         self.heartbeat_interval = DEFAULT_INTERVAL  # minutes
         self.heartbeat_prompt: str | None = None    # custom per-task prompt
         self._heartbeat_task: asyncio.Task | None = None
+        self._hb_tick_in_flight = False  # True while a tick's agent turn is running
 
         # One-shot wake state (restart-surviving)
         self.pending_wake: str | None = None
@@ -192,8 +193,19 @@ class Scheduler:
             log.info("Heartbeat DISABLED (in-flight tick, if any, will complete and deliver)")
             return
 
-        # Enabling or re-enabling: cancel stale task, start fresh
+        # Enabling or re-enabling: cancel stale task, start fresh — UNLESS the
+        # call comes from INSIDE the currently-running tick (an agent re-arming
+        # its own heartbeat mid-cascade): cancel() would kill the very tick that
+        # made the call — the work survives, the closing message dies. The loop
+        # re-reads interval + prompt every iteration, so a mid-tick reconfigure
+        # needs NO restart: update config, let the tick finish.
         if self._heartbeat_task and not self._heartbeat_task.done():
+            if self._hb_tick_in_flight:
+                log.info(
+                    f"Heartbeat RECONFIGURED in place (every {self.heartbeat_interval}m) — "
+                    "called mid-tick; the running tick completes and delivers, then the "
+                    "loop continues with the new prompt/interval.")
+                return
             self._heartbeat_task.cancel()
             self._heartbeat_task = None
 
@@ -335,10 +347,14 @@ class Scheduler:
 
                 prompt = self.heartbeat_prompt or DEFAULT_HEARTBEAT_PROMPT
                 log.info(f"Heartbeat firing... (prompt: {'custom' if self.heartbeat_prompt else 'default'})")
-                await self._send_agent_message(
-                    prompt=prompt,
-                    channel_id="heartbeat",
-                )
+                self._hb_tick_in_flight = True
+                try:
+                    await self._send_agent_message(
+                        prompt=prompt,
+                        channel_id="heartbeat",
+                    )
+                finally:
+                    self._hb_tick_in_flight = False
         except asyncio.CancelledError:
             log.info("Heartbeat loop cancelled.")
         except Exception as e:

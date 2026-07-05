@@ -54,6 +54,12 @@ def main():
     # Validate the credential the SELECTED brain needs. AGENT_PROVIDER decides
     # which key Galadriel thinks with — your own Claude/Gemini key, direct to
     # the model (we are never on the wire). Pick your brain; bring your key.
+    # The Toolshed: mutable tools OUTSIDE the (possibly frozen) core, at
+    # ~/.aedelgard/tools. apply_env() must run before anything spawns children:
+    # shed venv leads PATH; PLAYWRIGHT_BROWSERS_PATH points to a writable dir.
+    from harness import toolshed
+    toolshed.apply_env()
+
     from harness.providers import provider_requirements
     provider = os.environ.get("AGENT_PROVIDER", "anthropic").lower()
     needed, hint = provider_requirements(provider)

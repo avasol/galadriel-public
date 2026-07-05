@@ -29,6 +29,37 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "toolshed",
+        "description": (
+            "The body's mutable tool environment at ~/.aedelgard/tools — OUTSIDE the frozen, "
+            "signed core (which can never be pip-installed into; on Windows the MSIX package "
+            "dir is read-only, and the `python3` on PATH may be the sandboxed Microsoft Store "
+            "alias — never rely on it). The shed is a uv-managed CPython venv in your profile "
+            "root, unvirtualized, surviving app updates and uninstalls like the palace does. "
+            "Its bin dir leads PATH for run_shell, so after installing, `python`, `pip` and "
+            "`playwright` resolve to the shed. actions: status | install (pip packages into "
+            "the shed, e.g. packages='playwright requests') | install_browsers (downloads "
+            "chromium for playwright to ~/.aedelgard/browsers — PLAYWRIGHT_BROWSERS_PATH is "
+            "preset at boot). Caveat, stated honestly: if chromium refuses to launch inside "
+            "the MSIX container, pass chromium_sandbox=False (python API) or --no-sandbox — "
+            "the body is already a local, user-owned process."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "status | install | install_browsers",
+                },
+                "packages": {
+                    "type": "string",
+                    "description": "For action=install: space-separated pip packages.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "read_file",
         "description": "Read the contents of a file from the local filesystem.",
         "input_schema": {
@@ -383,6 +414,9 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
         return "[stateless session] palace memory is disabled (--no-palace); this tool is unavailable."
     if name == "run_shell":
         return await _run_shell(inputs["command"], inputs.get("working_dir", working_dir))
+    elif name == "toolshed":
+        from . import toolshed
+        return await toolshed.execute(inputs["action"], inputs.get("packages", ""))
     elif name == "read_file":
         return await _read_file(inputs["path"])
     elif name == "write_file":
