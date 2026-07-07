@@ -21,7 +21,9 @@ Guarded by tests/test_provider_parity.py.
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -495,6 +497,136 @@ _PROVIDER_REQUIREMENTS = {
 }
 
 
+log = logging.getLogger("galadriel.providers")
+
+# HTTP statuses that mean "this brain is unavailable right now" — closed model
+# (404), revoked access (403), throttle (429), provider incident (5xx / 529).
+# NOT here on purpose: 400 (malformed request — will fail on every rung) and
+# 401 (bad credential — falling back would mask a key problem, not fix it).
+_FALLBACK_WORTHY_STATUS = {403, 404, 408, 409, 429, 500, 502, 503, 504, 529}
+
+# Exception modules we treat as vendor-side when no HTTP status is attached
+# (connection refused, DNS, TLS, stream death). A TypeError raised by OUR own
+# shim code lives in 'builtins' and must surface as a bug, never a downgrade.
+_VENDOR_MODULES = ("anthropic", "httpx", "httpcore", "google", "botocore",
+                   "aiohttp", "urllib3", "requests")
+
+
+def _is_fallback_worthy(exc: Exception) -> bool:
+    """Decide whether an error means 'try the next rung' (True) or 'this is a
+    bug/config problem that follows you down every rung' (False)."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in _FALLBACK_WORTHY_STATUS
+    if isinstance(exc, (ConnectionError, OSError, TimeoutError,
+                        NotImplementedError)):
+        return True
+    mod = type(exc).__module__ or ""
+    return mod.split(".")[0] in _VENDOR_MODULES
+
+
+class _Rung:
+    """One step of the ladder: a lazily-built provider + optional model pin."""
+
+    def __init__(self, label: str, factory, model: str | None):
+        self.label = label
+        self.factory = factory      # () -> LLMProvider, called at most once
+        self.model = model          # None = use the caller's model (rung 0)
+        self.provider = None
+        self.dead = False           # construction failed (e.g. missing key)
+
+    def get(self):
+        if self.provider is None and not self.dead:
+            try:
+                self.provider = self.factory()
+            except Exception as e:
+                self.dead = True
+                log.warning("Fallback rung %s cannot be built: %s", self.label, e)
+        return self.provider
+
+
+class FallbackProvider:
+    """The ladder. Wraps an ordered chain of providers; if the active brain is
+    unavailable (closed model, revoked access, provider outage), the call steps
+    down to the next rung — at the price of one cold cache-write on the new
+    model. Demotion is sticky so every later call starts at the working rung;
+    the primary is re-probed after `retry_primary_s` so a reopened door is
+    found without a restart. With AGENT_MODEL_FALLBACKS unset this class is
+    never constructed and the hot path is byte-identical to before."""
+
+    name = "fallback"
+
+    def __init__(self, rungs: list, retry_primary_s: float = 3600.0):
+        self._rungs = rungs
+        self._active = 0
+        self._demoted_at: float | None = None
+        self._last_used = None     # provider that produced the last raw response
+        self.retry_primary_s = retry_primary_s
+
+    @property
+    def active_label(self) -> str:
+        return self._rungs[self._active].label
+
+    async def complete(self, *, model, max_tokens, system, tools, messages):
+        start = self._active
+        if start != 0 and self._demoted_at is not None and                 time.monotonic() - self._demoted_at >= self.retry_primary_s:
+            log.info("Fallback: probe window elapsed — re-trying primary %s",
+                     self._rungs[0].label)
+            start = 0
+        last_exc: Exception | None = None
+        for i in range(start, len(self._rungs)):
+            rung = self._rungs[i]
+            provider = rung.get()
+            if provider is None:
+                continue
+            try:
+                raw = await provider.complete(
+                    model=rung.model or model, max_tokens=max_tokens,
+                    system=system, tools=tools, messages=messages)
+            except Exception as e:
+                if not _is_fallback_worthy(e):
+                    raise
+                log.warning("Rung %s unavailable (%s: %s) — stepping down",
+                            rung.label, type(e).__name__, e)
+                last_exc = e
+                continue
+            self._last_used = provider
+            if i != self._active:
+                if i == 0:
+                    log.warning("Fallback: primary %s RECOVERED — promoting back",
+                                rung.label)
+                    self._demoted_at = None
+                else:
+                    log.warning("Fallback: DOWNGRADED to %s (was %s). One cold "
+                                "cache-write, then warm again.",
+                                rung.label, self._rungs[self._active].label)
+                    self._demoted_at = time.monotonic()
+                self._active = i
+            return raw
+        raise last_exc if last_exc is not None else RuntimeError(
+            "FallbackProvider: no usable rungs")
+
+    def usage(self, raw) -> Usage:
+        provider = self._last_used or self._rungs[0].get()
+        return provider.usage(raw)
+
+
+def _parse_fallback_chain(spec: str, primary_provider_name: str) -> list:
+    """'claude-opus-4-8, gemini:gemini-3.1-pro' -> [(provider, model), ...].
+    A bare model name means 'same provider as the primary, lesser model'."""
+    out = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            pname, mname = part.split(":", 1)
+            out.append((pname.strip().lower(), mname.strip()))
+        else:
+            out.append((primary_provider_name, part))
+    return out
+
+
 def provider_requirements(provider_name: str | None = None) -> tuple[tuple, str]:
     """Return (env_vars_any_of, hint) for the selected provider. Used by main.py
     to gate boot per the chosen brain, so the body is never blocked for lacking a
@@ -509,6 +641,28 @@ def make_provider(provider_name: str | None = None, *,
     """Select a provider. Defaults to 'anthropic' so the live hot path is
     unchanged unless AGENT_PROVIDER is explicitly set to something else."""
     name = (provider_name or os.environ.get("AGENT_PROVIDER") or "anthropic").lower()
+    base = _make_single(name, anthropic_client=anthropic_client, api_key=api_key)
+
+    chain = (os.environ.get("AGENT_MODEL_FALLBACKS") or "").strip()
+    if not chain:
+        return base   # the parity path — byte-identical to the pre-ladder code
+
+    rungs = [_Rung(f"{base.name}:<primary>", lambda b=base: b, None)]
+    for pname, mname in _parse_fallback_chain(chain, base.name):
+        # NB: rungs build via _make_single, never make_provider — re-entering
+        # the chain logic here would wrap ladders in ladders.
+        rungs.append(_Rung(
+            f"{pname}:{mname}",
+            lambda p=pname: _make_single(p, api_key=api_key),
+            mname))
+    retry_s = float(os.environ.get("AGENT_FALLBACK_RETRY_PRIMARY_S", "3600"))
+    return FallbackProvider(rungs, retry_primary_s=retry_s)
+
+
+def _make_single(name: str, *, anthropic_client=None,
+                 api_key: str | None = None) -> LLMProvider:
+    """Construct exactly one provider — the pre-ladder selection logic,
+    verbatim. Used for the primary and for each fallback rung."""
     cls = _REGISTRY.get(name)
     if cls is None:
         raise ValueError(
