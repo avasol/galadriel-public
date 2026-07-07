@@ -22,6 +22,32 @@ idea.
 
 ---
 
+## ⚖️ A note on threat models — read this before you judge the defaults
+
+This repository is a **founder's harness**, not a hosted product. It is the
+open engine that [Aedelgard](https://aedelgard.com) grew from, published so
+the memory architecture can be inspected, ported, and left with — and it is
+run, as designed, by one person on hardware they fully control, granted the
+same trust they would grant themselves:
+
+- `run_shell` is deliberately unrestricted — the operator IS the user.
+- The Tower UI ships without authentication and binds to localhost for
+  exactly that reason.
+- Self-modification is a feature here, because the operator reviews their
+  own agent's commits.
+
+**The Aedelgard product carries a different, tighter posture.** The packaged
+body gates first-run behind explicit consent, its background reflection may
+*propose but never act*, and the hosted service never gets these tools at
+all. If you are evaluating Aedelgard-the-product, judge it by
+[aedelgard.com/architecture](https://aedelgard.com/architecture) and
+[aedelgard.com/security](https://aedelgard.com/security) — this repo shows
+you the engine's honesty, not the product's perimeter. If you run THIS
+harness, you are choosing the founder's trust model: keep it on a machine
+that is yours, behind interfaces that are yours.
+
+---
+
 ## 🌟 The thesis: memory + self-modification = an agent that compounds
 
 Most AI agents are amnesiac and frozen. Each session starts cold, and the code that
