@@ -251,6 +251,50 @@ def search(
 
 # ─── Archival ──────────────────────────────────────────────────────
 
+def _refresh_chroma_view() -> None:
+    """Make miner writes visible to THIS long-lived process immediately.
+
+    THE DEFECT ("a latency, not a loss"): when `mempalace mine` runs as a
+    subprocess (the always-on host path of `_run_mempalace`), it writes new
+    embeddings to chroma.sqlite3 — but chromadb caches the entire System
+    (including HNSW vector segments) per path in
+    `SharedSystemClient._identifier_to_system`, so every "new"
+    PersistentClient opened in-process for the same path receives the SAME
+    stale System. mempalace's own mtime-based client rebuild fires correctly
+    and achieves nothing. Result: drawers filed mid-session were invisible
+    to `palace_search` until the next process restart.
+
+    Two caches conspire, so purge both:
+      1. chromadb's global System cache — otherwise every "new" client for
+         the path receives the same stale System.
+      2. mempalace's `_DEFAULT_BACKEND` client cache — otherwise the search
+         path (search_memories → get_collection) keeps its old client even
+         after the System cache clears.
+
+    Forcing a true fresh open also re-runs mempalace's `_fix_blob_seq_ids`
+    repair (the chromadb HNSW-ingest guard), which only fires on client
+    construction. Clearing is cheap (dict clears); the next query pays one
+    reopen from disk and sees everything the miner wrote. On the frozen-body
+    path (in-process mine) the refresh is harmless and keeps the same
+    contract. Never raises.
+    """
+    try:
+        from chromadb.api.shared_system_client import SharedSystemClient
+        SharedSystemClient.clear_system_cache()
+    except Exception as e:
+        log.warning(f"chroma system-cache refresh failed: {e}")
+    try:
+        from mempalace import palace as _mp_palace
+        _backend = getattr(_mp_palace, "_DEFAULT_BACKEND", None)
+        if _backend is not None:
+            # NOTE: do NOT call _backend.close() — it sets _closed=True and
+            # poisons the backend for all future use. Clear the dicts only.
+            getattr(_backend, "_clients", {}).clear()
+            getattr(_backend, "_freshness", {}).clear()
+    except Exception as e:
+        log.warning(f"mempalace backend-cache refresh failed: {e}")
+
+
 async def mine_batch_dir(
     batch_dir: Path,
     agent: str = DEFAULT_WING,
@@ -273,6 +317,10 @@ async def mine_batch_dir(
     try:
         rc, _out, err = await _run_mempalace(args, timeout=MINE_TIMEOUT_SEC)
         if rc == 0:
+            # Cross-process visibility: the miner wrote new embeddings; drop
+            # chromadb's in-process System cache so the NEXT in-process
+            # search actually sees them (see _refresh_chroma_view).
+            _refresh_chroma_view()
             # Refresh the wake-up cache so the dynamic block picks up new drawers
             asyncio.ensure_future(refresh_wake_up_cache())
             return True
@@ -480,12 +528,32 @@ async def add_drawer(
     ok = await mine_batch_dir(batch_dir, agent="agent-add")
     if not ok:
         return f"[palace add] mine failed — content still on disk at {batch_dir}"
+    # Verify by substance: exit codes lie — confirm the drawer is actually
+    # visible to THIS process before claiming immediate recall.
+    visible = _drawer_visible(str(target_dir / fname))
     return (
         f"Filed to palace: wing=`{wing}`"
         + (f", room=`{room}`" if room else "")
         + (f", topic=`{topic}`" if topic else "")
         + f", path={fname}"
+        + (" — verified searchable now." if visible else
+           " — ⚠ mined but NOT yet visible to in-process search; it will "
+           "surface after the next restart. Do not rely on immediate recall.")
     )
+
+
+def _drawer_visible(source_file: str) -> bool:
+    """Substance check: is a just-mined drawer visible to THIS process's
+    chroma view? Exact metadata match on source_file — cheap, no embedding."""
+    try:
+        col = _drawers_collection()
+        if col is None:
+            return False
+        res = col.get(where={"source_file": source_file}, limit=1)
+        return bool(res.get("ids"))
+    except Exception as e:
+        log.warning(f"drawer visibility check failed: {e}")
+        return False
 
 
 # ── LIVING-MEMORY EXTENSION (ported from the /chat harness to the body,
