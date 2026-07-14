@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from .providers import make_provider
 from .memory import MemoryManager
+from .journal import ConversationJournal
 from .tools import TOOL_DEFINITIONS, execute_tool
 from .safety import classify_command, format_safety_notice
 
@@ -101,6 +102,76 @@ def _serialize_content(content):
     if hasattr(content, "model_dump"):
         return content.model_dump(exclude_none=True)
     return str(content)
+
+
+def _estimate_msg_tokens(msg) -> int:
+    """Cheap token estimate for one message dict: len(JSON)/4. We need
+    magnitude, not tokenizer precision. Never raises."""
+    try:
+        import json as _json
+        return max(1, len(_json.dumps(msg, default=str)) // 4)
+    except Exception:
+        return max(1, len(str(msg)) // 4)
+
+
+def _build_trim_receipt(tag: str, batch_dir, count: int) -> dict:
+    """THE UNBROKEN THREAD: a trim receipt — everything a future turn needs
+    to recover dropped content by TARGETED READ, not expedition."""
+    from pathlib import Path as _P
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
+    return {
+        "tag": tag,
+        "count": count,
+        "archive_file": str(_P(batch_dir) / f"{_P(batch_dir).name}.md"),
+        "journal_day": now.strftime("%Y-%m-%d"),
+        "at": now.strftime("%H:%M UTC"),
+    }
+
+
+def _render_recovery_advisory(receipt) -> str:
+    """Render the post-trim advisory. Rich dict receipts (routine trims) name
+    exact readable paths — closing the race between trim and mine. Legacy
+    string tags (max_tokens recovery path) keep the original wording."""
+    if isinstance(receipt, dict):
+        return (
+            f"[SYSTEM:TRIM-RECEIPT] At {receipt['at']} a routine token-budget "
+            f"trim dropped {receipt['count']} earlier message(s) from this "
+            f"conversation. Their verbatim text is readable RIGHT NOW — no "
+            f"search required: (1) archive file `{receipt['archive_file']}` "
+            f"(read_file works even if mining hasn't finished); (2) journal "
+            f"day-file `memory/journal/{receipt['journal_day']}.jsonl`. Mined "
+            f"drawers (may lag by seconds) are under palace tag "
+            f"`{receipt['tag']}`. If the user references content you cannot "
+            f"see, PREFER these receipt paths over exploratory searching."
+        )
+    return (
+        f"[SYSTEM:POST-RECOVERY-ADVISORY] An earlier max_tokens "
+        f"cascade in this channel trimmed/reset the conversation. "
+        f"The pre-incident exchange was archived to the palace. "
+        f"If the user references earlier content you cannot see, "
+        f"recall it with `palace_search` — the archive is filed "
+        f"under channel tag `{receipt}`."
+    )
+
+
+def _resolve_history_token_budget(context_window: int) -> int:
+    """How many estimated tokens of conversation history to KEEP.
+
+    THE MEASURED KEEP: retention used to be count-based (max_messages=100
+    every turn) — token-blind. One tool-heavy cascade is 20-40 messages, so
+    the working window covered ~3 turns while most of the context window sat
+    unused, and same-day content silently left the window. Retention now
+    trims on a TOKEN budget instead.
+
+    Default 150k, override via AGENT_HISTORY_TOKEN_BUDGET. Clamped to 70% of
+    the model's context window (headroom for system prompt + tools + output)
+    and to a floor of 8192 so pathological configs cannot starve the mind.
+    """
+    env = os.environ.get("AGENT_HISTORY_TOKEN_BUDGET")
+    budget = int(env) if env and env.isdigit() else 150_000
+    ceiling = int(context_window * 0.70) if context_window > 0 else budget
+    return max(8_192, min(budget, ceiling))
 
 
 def _contains_tool_use(msg: dict) -> bool:
@@ -389,6 +460,20 @@ class GaladrielAgent:
 
         # Context-window tracking
         self.context_window = _resolve_context_window(self.model)
+
+        # THE MEASURED KEEP: token-budget history retention.
+        self.history_token_budget = _resolve_history_token_budget(self.context_window)
+        _cap = os.environ.get("AGENT_HISTORY_MAX_MESSAGES")
+        self.history_max_messages = int(_cap) if _cap and _cap.isdigit() else 1000
+
+        # THE UNBROKEN THREAD: verbatim conversation journal, federated into
+        # palace recall. Append-only JSONL under memory/journal/.
+        self.journal = ConversationJournal(memory_dir)
+        try:
+            from . import palace as _palace
+            _palace.register_journal(self.journal)
+        except Exception as _e:
+            log.warning(f"journal federation not registered: {_e}")
         self.context_warning_callback = None  # async (channel_id, message) -> None
         self._last_warn_tier: dict[str, str] = {}  # channel_id -> "attention"|"urgent"
 
@@ -401,7 +486,7 @@ class GaladrielAgent:
         # content during max_tokens recovery, set an advisory per channel
         # so the model knows to use palace_search if the user references
         # earlier exchange. Cleared when the channel is fully reset.
-        self._post_recovery_archive_tag: dict[str, str] = {}  # channel_id -> archive tag
+        self._post_recovery_archive_tag: dict = {}  # channel_id -> receipt dict (routine trim) | str tag (recovery)
 
         # Precompute tools-with-cache once. Tools never change at runtime,
         # so this object can be reused across every API call.
@@ -428,7 +513,7 @@ class GaladrielAgent:
     def _trim_history(
         self,
         messages: list,
-        max_messages: int = 100,
+        max_messages: int | None = None,
         channel_id: str | None = None,
         archive_before_trim: bool = False,
     ):
@@ -454,10 +539,33 @@ class GaladrielAgent:
 
         SAFETY: Never trims to fewer than 1 message.
         """
-        if len(messages) <= max_messages:
-            return
-
-        cut = len(messages) - max_messages
+        if max_messages is not None:
+            # Legacy count mode (recovery cascade): keep at most max_messages.
+            if len(messages) <= max_messages:
+                return
+            cut = len(messages) - max_messages
+        else:
+            # Token mode (routine per-turn): keep the largest suffix within
+            # the token budget, bounded by the hard message ceiling.
+            budget = getattr(self, "history_token_budget", 150_000)
+            hard_cap = getattr(self, "history_max_messages", 1000)
+            sizes = [_estimate_msg_tokens(m) for m in messages]
+            total = sum(sizes)
+            if total <= budget and len(messages) <= hard_cap:
+                return
+            cut = 0
+            remaining = total
+            while cut < len(messages) - 1 and remaining > budget:
+                remaining -= sizes[cut]
+                cut += 1
+            if len(messages) - cut > hard_cap:
+                cut = len(messages) - hard_cap
+            if cut <= 0:
+                return
+            log.info(
+                f"Token-budget trim: history ~{total} est. tokens > budget "
+                f"{budget}; cutting {cut} of {len(messages)} messages from the front"
+            )
 
         # Walk forward from the cut point to find a safe boundary.
         # A safe boundary is where we start with a plain user message
@@ -529,9 +637,14 @@ class GaladrielAgent:
             from . import palace
             tag = f"trim_{channel_id or 'default'}"
             snapshot = list(dropped)  # defensive copy before del
-            asyncio.create_task(palace.archive_conversation(tag, snapshot))
+            batch_dir = palace.plan_archive_dir(tag)
+            asyncio.create_task(
+                palace.archive_conversation(tag, snapshot, batch_dir=batch_dir))
             if channel_id is not None:
-                self._post_recovery_archive_tag[channel_id] = tag
+                # Rich receipt: recovery by targeted read, not expedition.
+                self._post_recovery_archive_tag[channel_id] = \
+                    _build_trim_receipt(tag=tag, batch_dir=batch_dir,
+                                        count=len(snapshot))
             log.info(
                 f"Routine trim: queued palace archive of {len(snapshot)} "
                 f"dropped message(s) (channel={channel_id}, tag={tag})"
@@ -664,6 +777,10 @@ class GaladrielAgent:
     async def respond(self, user_message: str | list, channel_id: str = "default") -> str:
         messages = self._get_messages(channel_id)
         messages.append({"role": "user", "content": user_message})
+        try:
+            self.journal.append("user", user_message, channel=channel_id)
+        except Exception as _e:
+            log.warning(f"journal append (user) failed: {_e}")
         self._trim_history(messages, channel_id=channel_id, archive_before_trim=True)
 
         # System is a list of blocks with cache_control on [0]. See memory.py.
@@ -678,14 +795,7 @@ class GaladrielAgent:
         if recovery_tag:
             system_blocks.append({
                 "type": "text",
-                "text": (
-                    f"[SYSTEM:POST-RECOVERY-ADVISORY] An earlier max_tokens "
-                    f"cascade in this channel trimmed/reset the conversation. "
-                    f"The pre-incident exchange was archived to the palace. "
-                    f"If the user references earlier content you cannot see, "
-                    f"recall it with `palace_search` — the archive is filed "
-                    f"under channel tag `{recovery_tag}`."
-                ),
+                "text": _render_recovery_advisory(recovery_tag),
             })
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
@@ -763,6 +873,11 @@ class GaladrielAgent:
                 self.memory.append_daily_log(
                     f"[chat:{channel_id}] User: {user_summary}..."
                 )
+                if final_text:
+                    try:
+                        self.journal.append("assistant", final_text, channel=channel_id)
+                    except Exception as _e:
+                        log.warning(f"journal append (assistant) failed: {_e}")
                 return final_text
 
             if response.stop_reason == "max_tokens":
@@ -824,6 +939,11 @@ class GaladrielAgent:
                         "for the thread.)*"
                     )
                     if truncated_text:
+                        try:
+                            self.journal.append("assistant", truncated_text + suffix,
+                                                channel=channel_id)
+                        except Exception:
+                            pass
                         return truncated_text + suffix
                     return (
                         "(Response exceeded token limit repeatedly. Conversation reset. "
@@ -908,6 +1028,12 @@ class GaladrielAgent:
 
     def clear_history(self, channel_id: str = "default"):
         self.conversations.pop(channel_id, None)
+        # The journal keeps everything; the history view cuts at this marker.
+        try:
+            self.journal.append("event", "[conversation cleared]",
+                                channel=channel_id)
+        except Exception:
+            pass
         # A fresh channel starts with no recovery advisory — clear stale state.
         self._post_recovery_archive_tag.pop(channel_id, None)
         self._output_ceiling_streak.pop(channel_id, None)

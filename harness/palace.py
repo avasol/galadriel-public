@@ -147,6 +147,75 @@ def _archive_root() -> Path:
     return Path(os.environ.get("PALACE_ARCHIVE_ROOT", DEFAULT_ARCHIVE_ROOT))
 
 
+# ── THE UNBROKEN THREAD ────────────────────────────────────────────────
+# Recall federates over the verbatim conversation journal. The agent
+# registers its ConversationJournal at boot; palace search falls back to a
+# lexical scan of recent verbatim day-files whenever the vector index
+# misses or scores loose. "Awaiting the nightly mine" stops being blindness.
+
+_JOURNAL = None
+
+
+def register_journal(journal) -> None:
+    """Register the ConversationJournal so search() can federate over it."""
+    global _JOURNAL
+    _JOURNAL = journal
+
+
+def _journal_fallback(query: str, days: int = 3, k: int = 3,
+                      min_score: int = 1, max_chars: int = 400) -> str:
+    """Lexical scan of recent journal day-files for un-mined verbatim matches.
+
+    Scores items by distinct query-term overlap; excludes items younger than
+    5 minutes so a search never echoes the very question being asked. Returns
+    a markdown section, or "" when there is nothing worth adding. Never raises.
+    """
+    if _JOURNAL is None:
+        return ""
+    try:
+        import re as _re
+        from datetime import date as _date, timedelta as _td
+        from datetime import datetime as _dt, timezone as _tz
+        terms = set(_re.findall(r"[a-zA-Z0-9]{3,}", query.lower()))
+        if not terms:
+            return ""
+        cutoff = _dt.now(_tz.utc).timestamp() - 300
+        scored = []
+        today = _date.today()
+        for d in range(days):
+            day = (today - _td(days=d)).isoformat()
+            for item in _JOURNAL.read_day(day):
+                if item.get("role") not in ("user", "assistant"):
+                    continue
+                content = item.get("content") or ""
+                low = content.lower()
+                score = sum(1 for t in terms if t in low)
+                if score < min_score:
+                    continue
+                ts = item.get("ts", "")
+                try:
+                    if _dt.fromisoformat(ts).timestamp() > cutoff:
+                        continue
+                except Exception:
+                    pass
+                scored.append((score, ts, item))
+        if not scored:
+            return ""
+        scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
+        lines = ["### Unmined journal (verbatim, lexical match — not yet vector-indexed)"]
+        for score, ts, item in scored[:k]:
+            content = (item.get("content") or "").strip().replace("\n", " ")
+            if len(content) > max_chars:
+                content = content[:max_chars] + "…"
+            lines.append(
+                f"- `{ts[:16]}` [{item.get('channel', '?')}/"
+                f"{item.get('role', '?')}] {content}")
+        return "\n".join(lines)
+    except Exception as e:
+        log.debug(f"journal fallback failed: {e}")
+        return ""
+
+
 def search(
     query: str,
     wing: str | None = None,
@@ -227,7 +296,9 @@ def search(
         if room: filters.append(f"room=`{room}`")
         if hall: filters.append(f"hall=`{hall}`")
         filter_str = f" [{', '.join(filters)}]" if filters else ""
-        return f"No drawers matched `{query}`{filter_str}"
+        miss = f"No drawers matched `{query}`{filter_str}"
+        jf = _journal_fallback(query, min_score=1)
+        return f"{miss}\n\n{jf}" if jf else miss
 
     header_bits = [f"`{query}`"]
     if wing: header_bits.append(f"wing=`{wing}`")
@@ -246,7 +317,21 @@ def search(
         lines.append(header)
         lines.append(content)
         lines.append("")
-    return "\n".join(lines).rstrip()
+    out = "\n".join(lines).rstrip()
+
+    # Federation: when the best vector hit is loose (>0.45) or distance is
+    # unknown, append fresher verbatim journal matches so recall never lags
+    # behind the nightly mine.
+    try:
+        dists = [d.get("distance") for d in drawers if d.get("distance") is not None]
+        best = min(dists) if dists else None
+    except Exception:
+        best = None
+    if best is None or best > 0.45:
+        jf = _journal_fallback(query, min_score=2)
+        if jf:
+            out += "\n\n" + jf
+    return out
 
 
 # ─── Archival ──────────────────────────────────────────────────────
@@ -367,7 +452,17 @@ def _serialize_message(msg: dict) -> str:
     return "\n\n".join(parts)
 
 
-async def archive_conversation(channel_id: str, messages: list[dict]) -> None:
+def plan_archive_dir(channel_id: str) -> Path:
+    """Pre-compute the archive batch dir for a conversation archive, so a
+    caller can hold the path SYNCHRONOUSLY (for a trim receipt) while the
+    archive+mine itself runs fire-and-forget."""
+    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(channel_id))
+    return _archive_root() / f"conversation_{safe}_{ts}"
+
+
+async def archive_conversation(channel_id: str, messages: list[dict],
+                               batch_dir: Path | None = None) -> None:
     """Archive a full conversation to the palace before it's wiped (`/new`).
 
     Writes a single timestamped .md file per conversation (mempalace chunks
@@ -380,7 +475,8 @@ async def archive_conversation(channel_id: str, messages: list[dict]) -> None:
 
     ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     safe_channel = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(channel_id))
-    batch_dir = _archive_root() / f"conversation_{safe_channel}_{ts}"
+    if batch_dir is None:
+        batch_dir = plan_archive_dir(channel_id)
 
     try:
         batch_dir.mkdir(parents=True, exist_ok=True)
@@ -395,7 +491,7 @@ async def archive_conversation(channel_id: str, messages: list[dict]) -> None:
             sections.append(_serialize_message(msg))
             sections.append("")
 
-        (batch_dir / f"conversation_{safe_channel}_{ts}.md").write_text(
+        (batch_dir / f"{batch_dir.name}.md").write_text(
             "\n".join(sections), encoding="utf-8"
         )
     except Exception as e:
