@@ -476,13 +476,16 @@ class Scheduler:
         log.info("Morning routine starting...")
         await self._send_agent_message(
             prompt=(
-                "[SYSTEM:MORNING_ROUTINE] Good morning! It is a new workday. "
-                "Please give a warm morning greeting. Then:\n"
-                "1. Check for any calendar or planning items he may need to respond to today.\n"
-                "2. Check our AWS coffers — run `aws ce get-cost-and-usage` for yesterday's costs "
-                "and provide a brief summary of spend.\n"
-                "3. Note anything else relevant from overnight.\n"
-                "Keep it concise but thorough. This also serves as a healthcheck."
+                "[SYSTEM:MORNING_ROUTINE] Good morning! A new day begins. "
+                "Give a warm morning greeting. Then:\n"
+                "1. Recall where things stood: check your diary and recent daily "
+                "log for yesterday's open threads, and carry forward anything "
+                "still unresolved.\n"
+                "2. Note anything from the quiet hours worth mentioning.\n"
+                "Ground every item in THIS agent's own memory — never assume "
+                "infrastructure, accounts, or duties that your palace does not "
+                "actually record. Keep it concise. This also serves as a "
+                "healthcheck."
             ),
             channel_id="morning",
         )
