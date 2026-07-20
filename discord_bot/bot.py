@@ -4,6 +4,7 @@ import os
 import base64
 import logging
 import asyncio
+import time as _time
 import discord
 from discord.ext import commands
 from harness.agent import GaladrielAgent
@@ -14,6 +15,13 @@ log = logging.getLogger("galadriel.discord")
 
 AUTHORIZED_USER_ID = int(os.environ.get("DISCORD_AUTHORIZED_USER_ID", "0"))
 CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0"))
+
+# THE PATIENT GATE: a red-tier approval waits as long as the process lives
+# by default. Waiting burns zero API tokens (the cascade is suspended at an
+# await); an aggressive auto-deny costs a full re-ask cascade whenever the
+# operator's attention is elsewhere. Set APPROVAL_TIMEOUT_MINUTES to bound
+# the wait; 0 = no timeout.
+APPROVAL_TIMEOUT_MINUTES = float(os.environ.get("APPROVAL_TIMEOUT_MINUTES", "0") or 0)
 
 # Discord messages cap at 2000 chars
 MAX_DISCORD_LENGTH = 1900
@@ -255,11 +263,13 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         and to give a proper disabled state once resolved."""
 
         def __init__(self, command: str, future: asyncio.Future):
-            super().__init__(timeout=30.0)
+            _t = APPROVAL_TIMEOUT_MINUTES * 60 if APPROVAL_TIMEOUT_MINUTES > 0 else None
+            super().__init__(timeout=_t)
             self.command = command
             self.future = future
             self.message: discord.Message | None = None
             self.dedup_count = 0
+            self.asked_at = _time.time()
 
         async def _resolve(self, interaction: discord.Interaction, approved: bool):
             if not self.future.done():
@@ -268,6 +278,9 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
                 child.disabled = True
             prefix = "✅ Approved" if approved else "❌ Denied"
             suffix = f" (merged {self.dedup_count + 1} requests)" if self.dedup_count else ""
+            waited = _time.time() - self.asked_at
+            if waited >= 120:
+                suffix += f" · after {int(waited // 60)} min"
             await interaction.response.edit_message(
                 content=f"{prefix}{suffix}: `{self.command}`",
                 view=self,
@@ -302,7 +315,8 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             if self.message:
                 try:
                     await self.message.edit(
-                        content=f"⏰ Timed out (denied): `{self.command}`",
+                        content=f"⏰ Approval window closed — denied after "
+                        f"{APPROVAL_TIMEOUT_MINUTES:g} min: `{self.command}`",
                         view=self,
                     )
                 except Exception as e:
@@ -328,9 +342,14 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         view = ApprovalView(command, future)
 
+        patience = (
+            f"expires after {APPROVAL_TIMEOUT_MINUTES:g} min"
+            if APPROVAL_TIMEOUT_MINUTES > 0
+            else "I will wait"
+        )
         msg = await channel.send(
             f"🔴 **Approval required**\n```\n{command}\n```\n"
-            f"Click a button below. (30s → denied)",
+            f"Asked <t:{int(view.asked_at)}:R> · {patience}.",
             view=view,
         )
         view.message = msg
