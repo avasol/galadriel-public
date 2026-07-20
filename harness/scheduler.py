@@ -232,7 +232,7 @@ class Scheduler:
 
     # ── One-shot wake ────────────────────────────────────────────
 
-    def arm_wake(self, prompt: str):
+    def arm_wake(self, prompt: str, live: bool = False):
         """Arm a single restart-surviving wake.
 
         Unlike the heartbeat, this fires EXACTLY ONCE and is cleared only after
@@ -248,13 +248,20 @@ class Scheduler:
         if not self.pending_wake:
             log.info("Wake disarmed.")
             return
-        log.info("One-shot wake ARMED (will fire once on next scheduler loop).")
-        # If the scheduler is already running, kick the wake loop now so the
-        # wake fires promptly rather than waiting for a restart. arm_wake() may
-        # be called from a non-async thread (e.g. a Flask request handler),
-        # which has no current event loop — so we MUST schedule onto the
-        # captured main loop via run_coroutine_threadsafe rather than
-        # asyncio.ensure_future (the latter raises "no current event loop").
+        log.info("One-shot wake ARMED (fires once on next scheduler start).")
+        if not live:
+            # DEFAULT: defer to the next scheduler start. A wake is almost
+            # always armed right before a planned restart; kicking the wake
+            # loop live here races that restart — the wake fires on the DYING
+            # process, self-clears, and the woken instance comes up with no
+            # context. start() picks pending_wake up from persisted state.
+            return
+        # EXPLICIT live=True: fire in-process (a delayed one-shot self-prompt
+        # with no restart involved). arm_wake() may be called from a non-async
+        # thread (e.g. a Flask request handler), which has no current event
+        # loop — so we MUST schedule onto the captured main loop via
+        # run_coroutine_threadsafe rather than asyncio.ensure_future (the
+        # latter raises "no current event loop").
         already_running = self._wake_task and not self._wake_task.done()
         if self._loop and self._loop.is_running() and not already_running:
             self._wake_task = asyncio.run_coroutine_threadsafe(

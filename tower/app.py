@@ -254,8 +254,10 @@ def create_tower(agent, scheduler=None) -> Flask:
 
         Body: {"prompt": "<self-prompt>"} to arm; {"prompt": ""} or
         {"disarm": true} to disarm. The wake fires exactly once on the next
-        scheduler loop (or on the next process start if armed and then
-        restarted), then clears itself.
+        scheduler START, then clears itself. Arming never fires in the
+        current process unless {"live": true} is passed (an in-process
+        delayed self-prompt) — a live fire would race a planned restart
+        and strand the restarted instance without its context.
         """
         if not scheduler:
             return jsonify({"error": "Scheduler not available"}), 503
@@ -264,7 +266,7 @@ def create_tower(agent, scheduler=None) -> Flask:
             scheduler.arm_wake("")
         else:
             prompt = data.get("prompt", "")
-            scheduler.arm_wake(prompt)
+            scheduler.arm_wake(prompt, live=bool(data.get("live", False)))
         return jsonify(scheduler.get_status())
 
 
