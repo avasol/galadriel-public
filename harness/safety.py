@@ -55,12 +55,30 @@ RED_PATTERNS = [
     r"^shutdown\b",
     r"^reboot\b",
     r"curl.*\|\s*(bash|sh)",
+    # Destructive primitives that previously slipped classification
+    r"^find\b.*\s-delete\b",
+    r"^xargs\b.*\brm\b",
+    r"^(sudo\s+)?mkfs",
+    r"^(sudo\s+)?dd\b.*\bof=/dev/",
+    r"^(sudo\s+)?shred\b",
+    r"^(sudo\s+)?truncate\b",
+    r"^(sudo\s+)?chmod\s+.*-R.*\s+/\s*$",
+    r"^git\s+clean\b.*\s-\w*f",
 ]
 
+# Shell control operators that chain commands: ; && || | & and newlines.
+# Splitting on the single-char class also consumes the doubled forms.
+_CONTROL_SPLIT = re.compile(r"[;|&\n]+")
 
-def classify_command(command: str) -> str:
-    """Classify a shell command into a permission tier."""
-    cmd = command.strip()
+# Command substitution hides an inner command from pattern matching —
+# opaque by construction, so it floors the tier at yellow.
+_SUBSTITUTION = re.compile(r"\$\(|`")
+
+_SEVERITY = {"green": 0, "yellow": 1, "red": 2}
+
+
+def _classify_single(cmd: str) -> str:
+    """Classify one command segment against the tier patterns."""
     for pattern in RED_PATTERNS:
         if re.search(pattern, cmd):
             return "red"
@@ -72,6 +90,32 @@ def classify_command(command: str) -> str:
             return "green"
     # Unknown commands default to yellow
     return "yellow"
+
+
+def classify_command(command: str) -> str:
+    """Classify a shell command into a permission tier.
+
+    Chained commands (``ls; rm -rf ~``) are split on shell control
+    operators and every segment is classified independently; the overall
+    tier is the MAX severity found. The whole string is also classified
+    unsplit, so pipe-aware patterns (``curl ... | sh``) keep matching.
+    Command substitution (``$(...)`` or backticks) floors the tier at
+    yellow — the inner command is opaque to pattern matching.
+
+    Splitting is textual, not a full shell parse: an operator inside
+    quotes still splits, which can only raise the tier, never lower it.
+    """
+    cmd = command.strip()
+    if not cmd:
+        return "yellow"
+    tiers = [_classify_single(cmd)]
+    for segment in _CONTROL_SPLIT.split(cmd):
+        segment = segment.strip()
+        if segment:
+            tiers.append(_classify_single(segment))
+    if _SUBSTITUTION.search(cmd):
+        tiers.append("yellow")
+    return max(tiers, key=_SEVERITY.__getitem__)
 
 
 def format_safety_notice(command: str, tier: str) -> str:
