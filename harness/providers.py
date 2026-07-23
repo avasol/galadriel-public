@@ -84,6 +84,23 @@ class AnthropicProvider:
             "output": getattr(u, "output_tokens", 0) or 0,
         }
 
+    async def list_models(self) -> list[dict]:
+        """Models THIS key may use, per the provider's own registry
+        (GET /v1/models — no hardcoded catalogue to go stale). Newest first.
+
+        Optional capability: the /model picker probes for this method with
+        hasattr(); providers without it simply don't offer a listing yet.
+        """
+        page = await self.client.models.list(limit=50)
+        return [
+            {
+                "id": m.id,
+                "display_name": getattr(m, "display_name", None) or m.id,
+                "created_at": str(getattr(m, "created_at", "") or ""),
+            }
+            for m in page.data
+        ]
+
 
 class _NotYetWired:
     """Base for providers whose wiring is roadmap, not code. Fails honestly

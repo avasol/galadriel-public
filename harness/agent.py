@@ -505,6 +505,59 @@ class GaladrielAgent:
         # Dump the complete prompt (system blocks + tools) to JSON for inspection
         _dump_prompt_to_file(self.memory, self.tools, debug_dir=debug_dir)
 
+    # ------------------------------------------------------------------
+    # The brain dial: hot-swap the model, keep the mind.
+    # The provider seam passes self.model per call, so the swap is live on
+    # the very next completion — no restart, no memory disturbance. The
+    # prompt cache is per-model: the first call after a swap pays a full
+    # cache write on the stable prefix.
+    # ------------------------------------------------------------------
+    def set_model(self, model_id: str, env_path: str | None = None) -> dict:
+        """Switch the live model and persist AGENT_MODEL to .env
+        (.env stays the single source of truth across restarts).
+        Re-derives model-dependent state; unknown ids degrade to defaults
+        (context window default, dialects learned on first call)."""
+        old = self.model
+        self.model = model_id
+        os.environ["AGENT_MODEL"] = model_id
+        self.context_window = _resolve_context_window(model_id)
+        self.history_token_budget = _resolve_history_token_budget(self.context_window)
+        persisted = self._persist_model_env(model_id, env_path)
+        log.info(
+            f"Brain dial: {old} -> {model_id} "
+            f"(context_window={self.context_window}, env_persisted={persisted})"
+        )
+        return {"old": old, "new": model_id,
+                "context_window": self.context_window, "persisted": persisted}
+
+    def _persist_model_env(self, model_id: str, env_path: str | None = None) -> bool:
+        """Atomic AGENT_MODEL line-edit in .env. Touches nothing else."""
+        import re as _re
+        import tempfile as _tempfile
+        path = env_path or os.path.join(self.working_dir, ".env")
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.readlines()
+            replaced = False
+            for i, ln in enumerate(lines):
+                if _re.match(r"\s*AGENT_MODEL\s*=", ln):
+                    lines[i] = f"AGENT_MODEL={model_id}\n"
+                    replaced = True
+                    break
+            if not replaced:
+                if lines and not lines[-1].endswith("\n"):
+                    lines[-1] += "\n"
+                lines.append(f"AGENT_MODEL={model_id}\n")
+            fd, tmp = _tempfile.mkstemp(dir=os.path.dirname(path) or ".",
+                                        prefix=".env.brain-dial.")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            os.replace(tmp, path)
+            return True
+        except Exception as e:
+            log.error(f"AGENT_MODEL persist failed ({path}): {e}")
+            return False
+
     def _get_messages(self, channel_id: str) -> list:
         if channel_id not in self.conversations:
             self.conversations[channel_id] = []

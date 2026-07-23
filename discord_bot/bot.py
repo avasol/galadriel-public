@@ -636,6 +636,98 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             return
         await interaction.response.send_message(_format_status_report(agent, scheduler))
 
+    @bot.tree.command(name="model", description="List the brains this key can wear — pick one; the mind stays")
+    async def slash_model(interaction: discord.Interaction):
+        """The brain dial: the provider seam made visible. Lists what the
+        active key may actually use (provider registry, not a hardcoded
+        table), then hot-swaps the live model and persists AGENT_MODEL."""
+        if interaction.user.id != AUTHORIZED_USER_ID:
+            await interaction.response.send_message("I do not know you, stranger. 🛡️", ephemeral=True)
+            return
+        provider = agent.provider
+        if not hasattr(provider, "list_models"):
+            await interaction.response.send_message(
+                f"⚠️ Provider `{getattr(provider, 'name', '?')}` doesn't expose model "
+                f"listing yet — the picker speaks the Anthropic path only, today."
+            )
+            return
+        await interaction.response.defer()
+        try:
+            models = await provider.list_models()
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Could not list models under this key: `{e}`")
+            return
+        if not models:
+            await interaction.followup.send("The key sees no models at all — check the provider console.")
+            return
+
+        valid_ids = {m["id"] for m in models}
+        options = []
+        for m in models[:25]:  # Discord select hard cap
+            is_current = m["id"] == agent.model
+            options.append(discord.SelectOption(
+                label=m["id"][:100],
+                value=m["id"],
+                description=(m.get("display_name") or "")[:100] or None,
+                emoji="⭐" if is_current else None,
+            ))
+
+        class ModelSelect(discord.ui.Select):
+            def __init__(self):
+                super().__init__(placeholder="Choose the brain — the mind stays…",
+                                 options=options, min_values=1, max_values=1)
+
+            async def callback(self, sel: discord.Interaction):
+                if sel.user.id != AUTHORIZED_USER_ID:
+                    await sel.response.send_message("I do not know you, stranger. 🛡️", ephemeral=True)
+                    return
+                choice = self.values[0]
+                if choice not in valid_ids:
+                    await sel.response.edit_message(content=f"⚠️ `{choice}` is not among the listed models.", view=None)
+                    return
+                if choice == agent.model:
+                    await sel.response.edit_message(
+                        content=f"Already thinking on `{choice}` — nothing to change.", view=None)
+                    return
+                res = agent.set_model(choice)
+                persist_note = "" if res["persisted"] else "\n⚠️ **`.env` persist FAILED** — the swap is live but will not survive a restart. Check the log."
+                await sel.response.edit_message(
+                    content=(
+                        f"🧠 **Brain swapped, mind untouched.**\n"
+                        f"`{res['old']}` → **`{res['new']}`** — live on the very next thought.\n"
+                        f"Context window: {res['context_window']:,} tokens · persisted to `.env`: "
+                        f"{'yes' if res['persisted'] else 'NO'}{persist_note}\n"
+                        f"_The prompt cache is per-model: the first call pays a fresh cache write "
+                        f"on the stable prefix, then it is cheap again._"
+                    ),
+                    view=None,
+                )
+                log.info(f"/model: {res['old']} -> {res['new']} by {sel.user.id}")
+                # Bookkeeping without asking: file the switch to the palace.
+                try:
+                    from harness import palace as _palace
+                    await _palace.add_drawer(
+                        content=(f"MODEL SWITCH via /model: {res['old']} -> {res['new']}. "
+                                 f"Live hot-swap through the provider seam (no restart); "
+                                 f"AGENT_MODEL persisted to .env: {res['persisted']}. "
+                                 f"Context window resolved to {res['context_window']}."),
+                        topic="model-switch",
+                        origin="decision",
+                    )
+                except Exception as e:
+                    log.warning(f"/model drawer filing failed: {e}")
+
+        view = discord.ui.View(timeout=120)
+        view.add_item(ModelSelect())
+        shown = len(options)
+        total = len(models)
+        more = f" (showing {shown} of {total})" if total > shown else ""
+        await interaction.followup.send(
+            f"🧠 **The brains this key may wear**{more} — current: `{agent.model}`\n"
+            f"_Same mind, same memory, whichever you choose. The swap is live and persists across restarts._",
+            view=view,
+        )
+
     @bot.tree.command(name="compact", description="Compress conversation history using Haiku (reduces token usage)")
     async def slash_compact(interaction: discord.Interaction):
         if interaction.user.id != AUTHORIZED_USER_ID:
