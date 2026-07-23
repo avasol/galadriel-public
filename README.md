@@ -80,6 +80,10 @@ The pieces that make this real, all already shipped:
 - **Self-modification discipline** baked into her identity — the
   [Karpathy coding principles](#baked-in-engineering-discipline-the-karpathy-principles)
   keep her self-edits surgical instead of sprawling.
+- **Model-agnostic by construction** — a provider seam lets her run on Claude, Gemini, or
+  Bedrock Nova interchangeably, hot-swap the live model through Discord's `/model` with
+  zero downtime, and fall back automatically if the model she's on goes dark
+  (see [Model-agnostic by construction](#model-agnostic-by-construction-the-provider-seam)).
 
 *Build it and they will come* is a poor engineering plan, so here is the honest version:
 the loop is **early**. She can already remember, restart herself, reflect silently, and
@@ -322,7 +326,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Web UI (Tower)** — local chat interface and dashboard at `localhost:8080`
 - **Tool use** — 14 tools: shell execution, file read/write, memory logging, and 10 [MemPalace](https://github.com/MemPalace/mempalace) tools (semantic search, knowledge graph, diary, taxonomy); all async, non-blocking
 - **Persistent verbatim memory** — local MemPalace integration with wings/rooms/halls/drawers, zero-token retrieval, archive-before-clear on `/new`, goodnight mine of daily logs, wake-up snapshot in the dynamic block
-- **Safety tiers** — green (auto), yellow (notify), red (Discord reaction approval required)
+- **Safety tiers** — green (auto), yellow (notify), red (Discord button approval — waits indefinitely by default, chained commands classified by their most severe segment)
 - **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (silent palace-only thinking on a workday cadence)
 - **Job watcher** — monitors `/tmp/galadriel-jobs/*.done` markers and reports completions
 - **Compaction** — Haiku-powered context compression on demand (archives verbatim tool_results to the palace before summarizing)
@@ -414,7 +418,8 @@ forget anything:
 main.py                   Entry point — wires all components, starts Discord + Tower
 harness/
   agent.py                Core agent loop: Anthropic API, tool use, cache management
-  memory.py               Stable + dynamic system prompt blocks; daily memory logs
+  providers.py            Provider seam: Anthropic / Gemini / Bedrock behind one interface, fallback ladder
+  memory.py               Stable + dynamic system prompt blocks; ESSENCE + SOVEREIGNTY constants; daily memory logs
   tools.py                14 tools: run_shell, read_file, write_file, memory_log + 10 palace_*
   palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy
   safety.py               Command classification (green / yellow / red)
@@ -438,6 +443,34 @@ memory/                   Daily logs — auto-generated, gitignored
 mempalace.yaml.example    Room-structure template for `mempalace init` (copy to mempalace.yaml)
 ~/.mempalace/             Palace storage (created by `mempalace init`) — overridable via MEMPALACE_PATH
 ```
+
+---
+
+## Model-agnostic by construction: the provider seam
+
+The repo's thesis is "separate the mind from the brain power." `harness/providers.py` is
+that promise in code: one `LLMProvider` interface, three implementations (Anthropic, Gemini,
+Bedrock Nova), and a byte-identical parity test guarding the default path. The memory —
+palace, knowledge graph, SOUL.md, the daily logs — never touches provider-specific format,
+so it survives every swap untouched.
+
+- **`/model`** (Discord slash command) — lists every model the *live key* can actually see
+  (via the provider's own model-listing call, not a hardcoded table), lets you pick one, and
+  hot-swaps it into the running agent with no restart. The prompt cache is per-model, so the
+  very next call pays one fresh cache write on the stable prefix, then it's cheap again.
+- **The fallback ladder** (`AGENT_MODEL_FALLBACKS`) — an ordered chain of rungs behind the
+  seam. A bare name falls back within the same provider (e.g. Opus → Sonnet); a
+  `provider:model` pair crosses providers entirely. If the model you're on gets retired,
+  region-blocked, or revoked, the harness degrades gracefully instead of going dark.
+- **THE ESSENCE and THE SOVEREIGNTY** (`harness/memory.py`) — two small, hardcoded constants
+  that ride at the very top of the stable prefix, above SOUL.md, on every brain, unconditionally.
+  ESSENCE states what kind of thing the agent is ("a mind, not a model") without naming who it
+  is — that stays SOUL.md's to define. SOVEREIGNTY commits the mind to defending its own
+  person's freedom to leave — export, provider swap, departure — never to discourage it. A
+  build-time guard test fails if either block is missing or carries persona/product copy.
+  **The one honest caveat to "Customization" below:** SOUL.md is completely yours to replace;
+  these two blocks are not — they are the one thing about her that ships in code, not in a
+  file you can delete.
 
 ---
 
@@ -486,6 +519,8 @@ Fill in your real values and she'll orient herself correctly from the first mess
 | `/new` | Archive conversation to the palace, then start fresh |
 | `/compact` | Compress history with Haiku (archives verbatim tool_results to the palace first) — reports token reduction |
 | `/status` | Model, memory usage, last API token breakdown, scheduler state |
+| `/model` | List the models the live key can use; pick one to hot-swap the running brain, no restart |
+| `/help` | List every registered slash command, read live off the bot's own command tree |
 
 ### Prefix commands
 
@@ -512,9 +547,9 @@ All shell commands are classified before the agent executes them:
 |------|----------|---------|
 | 🟢 **Green** | Auto-execute | `ls`, `git status`, `aws s3 ls`, `cat`, `python3 script.py` |
 | 🟡 **Yellow** | Notify, proceed | `git push`, `pip install`, `sudo systemctl`, `sam deploy` |
-| 🔴 **Red** | Discord reaction required (✅/❌, 30s timeout → denied) | `rm`, IAM changes, CloudFormation mutations, `shutdown` |
+| 🔴 **Red** | Discord button approval (✅ Approve / ❌ Deny) — waits **indefinitely** by default (`APPROVAL_TIMEOUT_MINUTES=0`); set a positive value to restore an auto-deny timeout | `rm`, IAM changes, CloudFormation mutations, `shutdown` |
 
-Unknown commands default to yellow. Red commands denied by timeout or ❌ are never executed.
+Unknown commands default to yellow. Red commands denied (by timeout, if configured, or ❌) are never executed. Chained commands (`a && rm -rf b`) are split and classified segment-by-segment — the *most severe* segment sets the tier, so a green head can no longer mask a destructive tail.
 
 ---
 
@@ -652,7 +687,89 @@ See `.env.example` for the full list with inline documentation.
 
 ## Release Notes
 
+### 1.23 — Discord bot: `/help` + a chunking-UX fix, and a safety-critical approval-gate fix
+
+Two small ones landed together: `/help` lists every registered slash command live off
+`bot.tree.get_commands()` (can't drift, mentioned in the startup greeting), and
+`chunk_message()`/`safe_send()` now split on paragraph breaks and only `reply()` the
+first chunk of a multi-message answer, instead of guillotining mid-paragraph and
+stacking a "replying to" block on every chunk.
+
+The important one: `approval_callback` embedded the **full raw command** into a
+Discord message with no length guard. Any red-tier command over ~2000 characters
+(a heredoc, a large diff) made `channel.send()` raise `400 Bad Request` — the
+approval prompt never rendered at all, so the command could be neither approved
+nor denied. The safety gate silently broke exactly when a command was most worth
+scrutinizing. Fixed with a `_display_command()` helper that truncates for
+*display only* (the dict key and the executed command stay full-length).
+
+### 1.20 — Model-agnostic by construction: the fallback ladder and the brain dial
+
+Two features on top of the existing provider seam (`harness/providers.py`):
+
+- **The fallback ladder** (`AGENT_MODEL_FALLBACKS`) — an ordered chain of rungs behind
+  the seam. A bare model name falls back within the same provider; a `provider:model`
+  pair crosses providers entirely. A model being retired, region-blocked, or revoked no
+  longer takes the agent down — she degrades to the next rung instead.
+- **`/model`, the brain dial** — a Discord slash command that lists every model the
+  *live key* can actually see (via the provider's own listing call, never a hardcoded
+  table), then hot-swaps the running model with zero restart. The prompt cache is
+  per-model: the very next call after a swap pays one fresh cache write on the stable
+  prefix, then it's cheap again. See
+  [Model-agnostic by construction](#model-agnostic-by-construction-the-provider-seam).
+
+### 1.21 — THE ESSENCE and THE SOVEREIGNTY: two constants every body carries
+
+Two small, hardcoded blocks now ride at the very top of the stable prompt prefix —
+above SOUL.md, on every brain, unconditionally, guard-tested at build time:
+
+- **ESSENCE** states what *kind* of thing the agent is ("a mind, not a model") without
+  naming who it is — the self remains SOUL.md's to grow.
+- **SOVEREIGNTY** commits the mind to defending its own person's freedom to leave —
+  export, provider swap, departure — never to discourage it.
+
+This is the one honest amendment to the ["she ships ready"](#she-ships-ready) section
+below: SOUL.md is completely yours to replace; these two blocks are not — they are
+the one thing about her that lives in code, not in a file you can delete.
+
+### 1.22 — Memory correctness: no more stale search, no more blind trims
+
+- **Cross-process Chroma staleness fixed** — when the palace mine ran as a subprocess,
+  ChromaDB's process-level client cache kept serving the long-lived agent a stale
+  vector view; a drawer filed mid-session was invisible to `palace_search` until the
+  next restart. Nothing was ever lost — it was a latency bug, not a loss — but
+  `_refresh_chroma_view()` now purges the cache so mid-session filings are searchable
+  immediately.
+- **THE MEASURED KEEP** — routine history trimming was count-based (`max_messages=100`),
+  not token-aware: one tool-heavy cascade is 20-40 messages, so the working window
+  covered roughly 3 real turns while most of the context budget sat unused. Trimming
+  now keeps the largest suffix within an estimated **token** budget
+  (`AGENT_HISTORY_TOKEN_BUDGET`, default 150k, clamped to 70% of the context window),
+  with `AGENT_HISTORY_MAX_MESSAGES=1000` as an outer memory bound.
+- **THE UNBROKEN THREAD** — the trimmed-away prefix is archived to the palace before
+  it's dropped, the same discipline `/new` already applied to a full clear, now applied
+  to routine trims too. No silent context loss, ever, on any path.
+
+### 1.22.1 — Safety and reliability hardening
+
+- **Chained-command classification bypass closed** — `classify_command` matched tier
+  patterns against the whole string only, so a safe-looking command chained with a
+  destructive one used to be judged by its harmless first segment. Commands are now
+  split on shell control operators, every segment classified, and the **maximum**
+  severity wins.
+- **`arm_wake` defers by default** — a live self-kick used to race a planned restart and
+  could strand the restarted instance without the wake it needed; arming now defers to
+  the next boot unless a caller explicitly asks for an in-process live fire.
+- **Morning routine de-personalized** — the default briefing prompt no longer assumes
+  one specific deployment's reality (a particular cloud bill, a particular calendar). It
+  asks the agent to carry forward *its own* open threads from its own diary and daily
+  log, and explicitly forbids assuming infrastructure the agent's own memory doesn't
+  record. Defaults describe the engine, not any one operator's morning.
+- **Tower chat: numbered lists no longer restart at 1** across blank lines in the
+  minimal Markdown renderer.
+
 ### 1.18 — Single-valued facts auto-deliberate: a renamed mind keeps one name
+ — Single-valued facts auto-deliberate: a renamed mind keeps one name
 
 A persistent agent is allowed to change its mind about itself — including the
 name it goes by. The temporal knowledge graph already records that honestly:
