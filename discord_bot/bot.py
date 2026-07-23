@@ -230,6 +230,22 @@ def chunk_message(text: str) -> list[str]:
     return chunks
 
 
+def _display_command(command: str, limit: int = 1500) -> str:
+    """Truncate a shell command for display in a Discord message.
+
+    The full `command` string is still used as the approval dict key and
+    for actual execution — this only bounds what gets EMBEDDED in message
+    content, which has a hard 2000-char Discord cap regardless of how many
+    buttons/views are attached. A long command (a heredoc, a big diff)
+    silently broke the entire red-tier approval gate before this existed:
+    channel.send() raised 400 Bad Request and the approval prompt never
+    rendered at all, so a long command could never be approved OR denied.
+    """
+    if len(command) <= limit:
+        return command
+    return command[:limit] + f"\n… ({len(command) - limit} more chars, truncated for display only)"
+
+
 def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> commands.Bot:
     """Create and configure the Discord bot."""
     intents = discord.Intents.default()
@@ -288,7 +304,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             if waited >= 120:
                 suffix += f" · after {int(waited // 60)} min"
             await interaction.response.edit_message(
-                content=f"{prefix}{suffix}: `{self.command}`",
+                content=f"{prefix}{suffix}: `{_display_command(self.command)}`",
                 view=self,
             )
             self.stop()
@@ -322,7 +338,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
                 try:
                     await self.message.edit(
                         content=f"⏰ Approval window closed — denied after "
-                        f"{APPROVAL_TIMEOUT_MINUTES:g} min: `{self.command}`",
+                        f"{APPROVAL_TIMEOUT_MINUTES:g} min: `{_display_command(self.command)}`",
                         view=self,
                     )
                 except Exception as e:
@@ -354,7 +370,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             else "I will wait"
         )
         msg = await channel.send(
-            f"🔴 **Approval required**\n```\n{command}\n```\n"
+            f"🔴 **Approval required**\n```\n{_display_command(command)}\n```\n"
             f"Asked <t:{int(view.asked_at)}:R> · {patience}.",
             view=view,
         )
