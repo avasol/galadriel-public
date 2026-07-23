@@ -140,8 +140,8 @@ instead? See [Quick Start](#quick-start).
 
 > **Where to get an API key:** the [Anthropic Console](https://console.anthropic.com/).
 > A `claude-opus-4-8` run is the default; downgrade to Sonnet or Haiku in `.env` for a
-> cheaper agent — the [cost section](#the-cost-savings-that-most-people-miss) explains
-> how prompt caching keeps even Opus affordable.
+> cheaper agent — see [running costs](#running-costs-prompt-caching-in-practice) for
+> how caching keeps even Opus affordable.
 
 ---
 
@@ -181,7 +181,7 @@ The 90% cache-read discount remains intact. Adding MemPalace costs ~1.5 percenta
 - **Long term (across months):** The knowledge graph preserves history. When a fact changes, the old triple gets a `valid_to` date and the new one goes in — so "what was the max_tokens setting last October?" and "what is it now?" both resolve correctly. Nothing is overwritten, only superseded.
 - **On relational questions:** Graph traversal ("everything ever said about the payment service," "every decision involving the scheduler," "the full timeline of the Polly voice choice") resolves as **one KG call against the local SQLite store**. The kind of query that, done naively through conversation history, would cost you real money — or just fail outright because the context has long since been compacted away.
 
-Read on for [the metaphor system](#the-memory-palace-metaphor) (wings, rooms, drawers, halls) and the [caching details](#the-cost-savings-that-most-people-miss) that make this affordable in the first place.
+Read on for [the metaphor system](#the-memory-palace-metaphor) (wings, rooms, drawers, halls) and the [caching notes](#running-costs-prompt-caching-in-practice) that keep it affordable.
 
 ---
 
@@ -269,13 +269,19 @@ ones as superseded rather than guessing. A mind renamed `A → B → A` wakes up
 
 ---
 
-## The cost savings that most people miss
+## Running costs: prompt caching, in practice
 
-Here is a fact that most Claude API users don't know about: **cached tokens cost 90% less than regular input tokens.** Not 10% less. Not 20% less. Ninety percent. [It's in the Anthropic docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching), but the majority of people building with the API leave this entirely on the table.
+Claude's API discounts cached input tokens by roughly 90% against a fresh read
+([Anthropic's own docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)) —
+well understood by now, so this section treats it as a practical operating detail rather
+than a discovery. On a long-running personal agent with a rich, mostly-stable system
+prompt, it's the difference between a background convenience and a real recurring cost,
+which is why Galadriel takes it for granted by default instead of leaving it to chance.
 
-The math is brutal in your favour. Every API call you make, Claude processes your system prompt from scratch — your personality definition, your memory files, your tool schemas — and you pay full price for every token, every time. With prompt caching, after the first call, all of that context reads at **$0.30/MTok instead of $3/MTok** (on Sonnet). That's the same intelligence, the same context, for a tenth of the cost. On a long-running personal agent with a rich system prompt, this is not a rounding error. It changes the economics entirely.
-
-Galadriel exploits this with three cache breakpoints, stacked deliberately:
+Every API call re-sends your system prompt — personality, memory files, tool schemas —
+at full price unless caching engages. With it engaged, that same context reads at
+**$0.30/MTok instead of $3/MTok** (on Sonnet) after the first call. Galadriel wires this
+in with three cache breakpoints, stacked deliberately:
 
 | Cache layer | What it covers | Behaviour |
 |---|---|---|
@@ -283,7 +289,7 @@ Galadriel exploits this with three cache breakpoints, stacked deliberately:
 | **Stable system block** | Personality + memory + identity files | Marked `cache_control: ephemeral`; hits at ~100% after first call |
 | **Trailing message history** | The growing conversation | Attached per-call; cache hit rate rises every turn |
 
-The stable block alone — your SOUL.md, MEMORY.md, identity files — is typically 4 000–8 000 tokens. On a warm cache, those tokens cost $0.08–$0.30/MTok instead of $0.80–$3.00/MTok depending on model. That's your biggest fixed overhead per call, cut by 90%, on every single turn of the conversation.
+The stable block alone — your SOUL.md, MEMORY.md, identity files — is typically 4 000–8 000 tokens. On a warm cache, those tokens cost $0.08–$0.30/MTok instead of $0.80–$3.00/MTok depending on model: your biggest fixed overhead per call, reduced on every turn.
 
 Anthropic's own benchmarks show latency dropping by up to 85% on long prompts with caching engaged. A 100K-token context that took 11.5 seconds drops to 2.4 seconds. For a persistent agent that carries memory across sessions, this is the difference between a tool that feels alive and one that grinds.
 
