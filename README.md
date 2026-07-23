@@ -94,6 +94,28 @@ you exactly where reality ends and ambition begins.
 
 ---
 
+## 📦 Prefer it packaged? Get the Aedelgard body
+
+Everything above is real, and everything above is yours to build. If you'd rather not:
+[**Aedelgard**](https://aedelgard.com) packages this same open engine into a signed,
+one-click desktop app that runs on *your* machine, under a tighter safety posture than
+this founder's harness — consent-gated first run, background reflection that may
+*propose but never act* (see [the note on threat models](#-a-note-on-threat-models--read-this-before-you-judge-the-defaults)
+above for the honest boundary between the two). Same memory, same provider seam, same
+thesis — separate the mind from the brain power — just built for you instead of by you.
+
+- [**Download the body**](https://aedelgard.com/download) — signed installers, Windows
+  and Linux live today, macOS following.
+- [**How it's built**](https://aedelgard.com/architecture) — the same trust matrix and
+  honest status this README holds itself to, applied to the packaged product.
+- [**How it works, plainly**](https://aedelgard.com/how-it-works) — no jargon, the
+  two-tier model in one page.
+
+This repo stays independent of that product — no feature here is held back to make
+Aedelgard look better, and nothing in Aedelgard is hidden from what this README shows you.
+
+---
+
 ## 🚀 Easiest start: Docker (one command)
 
 No Python, no virtualenv, no dependency wrangling. If you have Docker, you have a
