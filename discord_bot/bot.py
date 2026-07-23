@@ -206,7 +206,12 @@ def sniff_image_media_type(data: bytes) -> str | None:
 
 
 def chunk_message(text: str) -> list[str]:
-    """Split a long message into Discord-safe chunks."""
+    """Split a long message into Discord-safe chunks.
+
+    Prefers a paragraph break (\n\n) as the cut point so a split lands
+    between thoughts rather than mid-paragraph; falls back to a single
+    newline, then a hard cut, if no paragraph break exists in range.
+    """
     if len(text) <= MAX_DISCORD_LENGTH:
         return [text]
 
@@ -215,8 +220,9 @@ def chunk_message(text: str) -> list[str]:
         if len(text) <= MAX_DISCORD_LENGTH:
             chunks.append(text)
             break
-        # Try to split at a newline
-        split_at = text.rfind("\n", 0, MAX_DISCORD_LENGTH)
+        split_at = text.rfind("\n\n", 0, MAX_DISCORD_LENGTH)
+        if split_at == -1:
+            split_at = text.rfind("\n", 0, MAX_DISCORD_LENGTH)
         if split_at == -1:
             split_at = MAX_DISCORD_LENGTH
         chunks.append(text[:split_at])
@@ -392,25 +398,34 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
     bot.get_dm_channel = get_dm_channel
 
     async def safe_send(message: discord.Message, text: str):
-        """Send a reply with fallback to channel.send if reply fails."""
+        """Send a reply with fallback to channel.send if reply fails.
+
+        Only the FIRST chunk uses message.reply() (the "replying to"
+        arrow/preview). Continuation chunks use channel.send() so a
+        multi-chunk answer reads as one flowing reply instead of several
+        separate reply-blocks stacked on top of each other.
+        """
         chunks = chunk_message(text)
-        for chunk in chunks:
-            try:
-                await message.reply(chunk)
-                log.info(f"✅ Reply sent ({len(chunk)} chars) to channel {message.channel.id}")
-            except discord.HTTPException as e:
-                log.warning(f"⚠️ message.reply() failed: {e} — falling back to channel.send()")
+        for i, chunk in enumerate(chunks):
+            if i == 0:
                 try:
-                    channel = bot.get_channel(message.channel.id)
-                    if channel:
-                        await channel.send(chunk)
-                        log.info(f"✅ Fallback channel.send() succeeded ({len(chunk)} chars)")
-                    else:
-                        log.error(f"❌ Could not get channel {message.channel.id} for fallback")
-                except Exception as e2:
-                    log.error(f"❌ Fallback channel.send() also failed: {e2}")
-            except Exception as e:
-                log.error(f"❌ Unexpected error sending reply: {e}")
+                    await message.reply(chunk)
+                    log.info(f"✅ Reply sent ({len(chunk)} chars) to channel {message.channel.id}")
+                    continue
+                except discord.HTTPException as e:
+                    log.warning(f"⚠️ message.reply() failed: {e} — falling back to channel.send()")
+                except Exception as e:
+                    log.error(f"❌ Unexpected error sending reply: {e}")
+            try:
+                channel = bot.get_channel(message.channel.id)
+                if channel:
+                    await channel.send(chunk)
+                    log.info(f"✅ channel.send() succeeded ({len(chunk)} chars)")
+                else:
+                    log.error(f"❌ Could not get channel {message.channel.id} for send")
+            except Exception as e2:
+                log.error(f"❌ channel.send() failed: {e2}")
+            continue
 
     @bot.event
     async def on_ready():
@@ -436,7 +451,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         # Send startup greeting (DM-safe)
         channel = await get_dm_channel()
         if channel:
-            await channel.send("🧝‍♀️ Mae govannen. The harness is awake.")
+            await channel.send("🧝‍♀️ Mae govannen. The harness is awake. Try `/help` to see what I carry.")
             log.info(f"Startup greeting sent to channel {channel.id}")
         else:
             log.warning("Could not send startup greeting — no channel resolved.")
@@ -763,5 +778,17 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         except Exception as e:
             log.exception("Error during compaction")
             await interaction.followup.send(humanize_anthropic_error(e) or f"⚠️ Compaction failed: `{e}`")
+
+    @bot.tree.command(name="help", description="List what this mind can do — every slash command, one line each")
+    async def slash_help(interaction: discord.Interaction):
+        if interaction.user.id != AUTHORIZED_USER_ID:
+            await interaction.response.send_message("I do not know you, stranger. 🛡️", ephemeral=True)
+            return
+        cmds = sorted(bot.tree.get_commands(), key=lambda c: c.name)
+        lines = [f"`/{c.name}` — {c.description}" for c in cmds]
+        await interaction.response.send_message(
+            "🧝‍♀️ **What I carry**\n" + "\n".join(lines) +
+            "\n\n_Plain conversation works too — just talk to me._"
+        )
 
     return bot
