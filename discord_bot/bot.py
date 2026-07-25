@@ -696,10 +696,15 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         options = []
         for m in models[:25]:  # Discord select hard cap
             is_current = m["id"] == agent.model
+            # Friendly name LEADS (label); raw id is demoted to subtext.
+            # The reverse invited a costly misclick: two near-identical raw
+            # ids (claude-opus-4-8 vs claude-sonnet-4-6) as the prominent
+            # label, human name buried in grey — 2026-07-25, Lord Isildur
+            # meant Sonnet 4.6 and landed on Opus 4.8.
             options.append(discord.SelectOption(
-                label=m["id"][:100],
+                label=((m.get("display_name") or m["id"]))[:100],
                 value=m["id"],
-                description=(m.get("display_name") or "")[:100] or None,
+                description=m["id"][:100],
                 emoji="⭐" if is_current else None,
             ))
 
