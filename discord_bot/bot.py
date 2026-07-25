@@ -622,7 +622,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
 
         async with ctx.channel.typing():
             try:
-                result = await compact_conversation(messages, api_key=os.environ.get("ANTHROPIC_API_KEY"))
+                result = await compact_conversation(messages, agent.provider)
                 imgs = result.get("images_removed", 0)
                 if result["summaries_created"] == 0 and imgs == 0:
                     await ctx.reply(f"📚 {len(messages)} messages — nothing to compact.")
@@ -759,7 +759,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             view=view,
         )
 
-    @bot.tree.command(name="compact", description="Compress conversation history using Haiku (reduces token usage)")
+    @bot.tree.command(name="compact", description="Compress conversation history (summarizes old tool results, reduces token usage)")
     async def slash_compact(interaction: discord.Interaction):
         if interaction.user.id != AUTHORIZED_USER_ID:
             await interaction.response.send_message("I do not know you, stranger. 🛡️", ephemeral=True)
@@ -770,7 +770,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
 
         await interaction.response.defer()
         try:
-            result = await compact_conversation(messages, api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            result = await compact_conversation(messages, agent.provider)
             imgs = result.get("images_removed", 0)
             if result["summaries_created"] == 0 and imgs == 0:
                 await interaction.followup.send(f"📚 {len(messages)} messages — nothing to compact.")

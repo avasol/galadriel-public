@@ -1,14 +1,25 @@
-"""Context compaction — summarize old tool results with Haiku to keep history lean.
+"""Context compaction — summarize old tool results to keep history lean.
 
-When a tool_result is about to be replaced with its Haiku summary, the verbatim
+When a tool_result is about to be replaced with its summary, the verbatim
 content is archived to the MemPalace first (via `palace.mine_batch_dir`).
 Archive is fire-and-forget — a failure here must never break compaction.
+
+Summarization rides the agent's own LLMProvider seam (harness/providers.py) —
+it does NOT construct a private Anthropic client. That means /compact never
+requires ANTHROPIC_API_KEY when the dialed brain is Gemini or Bedrock; it just
+asks whatever provider is already live for a cheap, short completion. For
+Anthropic specifically we still name Haiku explicitly, since on that provider
+the dialed model (Sonnet/Opus via the Brain Dial) is deliberately the
+expensive tier and Haiku is a genuine, separate cheap SKU on the same key.
+Gemini/Bedrock ignore the `model` kwarg entirely and always run whatever
+model they were constructed with — which is already their cheap/fast default
+(gemini-2.5-flash, nova-micro) — so there is nothing cheaper to reach for
+there.
 """
 
 import asyncio
 import logging
 from datetime import datetime
-from anthropic import AsyncAnthropic
 
 from . import palace
 
@@ -19,8 +30,12 @@ log = logging.getLogger("galadriel.compaction")
 IMAGE_RETENTION_USER_TURNS = 3
 
 # Tool results in the last N messages are kept verbatim. Older long ones get
-# summarized by Haiku.
+# summarized.
 TOOL_RESULT_FRESH_MESSAGES = 20
+
+# The dedicated cheap SKU on Anthropic. Only consulted when provider.name ==
+# "anthropic" — every other provider ignores the `model` kwarg on complete().
+_ANTHROPIC_SUMMARY_MODEL = "claude-haiku-4-5-20251001"
 
 
 async def _archive_to_palace(items: list[dict]) -> None:
@@ -72,13 +87,16 @@ def _is_user_turn(msg: dict) -> bool:
     return False
 
 
-async def compact_conversation(messages: list, api_key: str = None) -> dict:
+async def compact_conversation(messages: list, provider) -> dict:
     """Compress conversation history.
 
     - Images in messages older than the last IMAGE_RETENTION_USER_TURNS user
       turns are replaced with a text placeholder.
     - Long tool_result blocks older than the last TOOL_RESULT_FRESH_MESSAGES
-      are summarized by Haiku.
+      are summarized via `provider.complete()` — the agent's own LLMProvider
+      seam, NOT a private client. `provider` is the caller's live instance
+      (e.g. `agent.provider`), so summarization always rides whatever brain
+      is actually dialed in.
     """
     user_turn_idx = [i for i, m in enumerate(messages) if _is_user_turn(m)]
     if len(user_turn_idx) > IMAGE_RETENTION_USER_TURNS:
@@ -98,7 +116,10 @@ async def compact_conversation(messages: list, api_key: str = None) -> dict:
             "images_removed": 0,
         }
 
-    client = AsyncAnthropic(api_key=api_key)
+    summarize_model = (
+        _ANTHROPIC_SUMMARY_MODEL if getattr(provider, "name", None) == "anthropic"
+        else "n/a"  # ignored by every non-Anthropic provider's complete()
+    )
     summaries_created = 0
     images_removed = 0
     compacted = []
@@ -136,9 +157,11 @@ async def compact_conversation(messages: list, api_key: str = None) -> dict:
                         "content": result_text,
                     })
                     try:
-                        summary_response = await client.messages.create(
-                            model="claude-haiku-4-5-20251001",
+                        summary_response = await provider.complete(
+                            model=summarize_model,
                             max_tokens=150,
+                            system="",
+                            tools=[],
                             messages=[
                                 {
                                     "role": "user",
