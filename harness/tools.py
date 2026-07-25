@@ -2,16 +2,39 @@
 
 import asyncio
 import os
+import platform
 import subprocess
 from pathlib import Path
+
+
+def _platform_shell_hint() -> str:
+    """One line naming the REAL shell syntax this host needs, computed at
+    runtime. The tool schema is resent on every single API call — if it
+    lies about the host (e.g. a hardcoded "EC2 instance" claim on a
+    customer's Windows machine), the model reaches for bash muscle memory
+    every turn and has to rediscover the truth by trial and error, every
+    turn, forever. This closes that loop at the source."""
+    system = platform.system()
+    if system == "Windows":
+        return (
+            "Windows host: commands run via cmd.exe by default. Prefer "
+            "PowerShell syntax for anything beyond a trivial command "
+            "(e.g. `powershell -Command \"...\"`) — cmd.exe cannot do most "
+            "of what you will want."
+        )
+    if system == "Darwin":
+        return "macOS host: bash/zsh syntax."
+    return "Linux host: bash syntax."
+
 
 TOOL_DEFINITIONS = [
     {
         "name": "run_shell",
         "description": (
-            "Execute a shell command on the EC2 instance. "
+            "Execute a shell command. "
             "Use for AWS CLI, git, file operations, system commands, python scripts, etc. "
-            "Commands run in the project working directory."
+            "Commands run in the project working directory. "
+            f"{_platform_shell_hint()}"
         ),
         "input_schema": {
             "type": "object",
