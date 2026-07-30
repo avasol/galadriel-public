@@ -839,6 +839,18 @@ class GaladrielAgent:
         # System is a list of blocks with cache_control on [0]. See memory.py.
         system_blocks = self.memory.build_system_blocks()
 
+        # THE FRESH NARRATIVE (Phase 0): shadow observation + cascade
+        # archive marker + glass-prompt trace. Zero prompt expense.
+        import uuid as _uuid
+        from .fresh_narrative import shadow_observe, archive_cascade
+        _signal_text = user_message if isinstance(user_message, str) else \
+            " ".join(b.get("text", "") for b in user_message
+                     if isinstance(b, dict) and b.get("type") == "text")
+        shadow_observe(str(self.memory.memory_dir), channel_id, _signal_text, messages)
+        _turn_start_idx = max(0, len(messages) - 1)
+        _trace_turn = _uuid.uuid4().hex
+        _trace_seq = 0
+
         # Post-recovery advisory. If an earlier turn in this channel triggered
         # the max_tokens recovery cascade, inject a non-cached note telling
         # the model that the prior conversation was archived to the palace
@@ -894,6 +906,16 @@ class GaladrielAgent:
             )
 
             self._log_usage(response)
+            # THE GLASS PROMPT: trace this provider call.
+            _trace_seq += 1
+            try:
+                from .prompt_trace import trace_call
+                trace_call(str(self.memory.memory_dir), channel=channel_id,
+                           turn_id=_trace_turn, seq=_trace_seq, model=self.model,
+                           system_blocks=system_blocks,
+                           messages=messages_for_api, response=response)
+            except Exception as _e:
+                log.warning(f"prompt trace failed: {_e}")
             await self._maybe_warn_context(response, channel_id)
             await self._maybe_warn_output_ceiling(response, channel_id)
 
@@ -931,6 +953,13 @@ class GaladrielAgent:
                         self.journal.append("assistant", final_text, channel=channel_id)
                     except Exception as _e:
                         log.warning(f"journal append (assistant) failed: {_e}")
+                # THE FRESH NARRATIVE: full cascade saved locally, verbatim —
+                # summonable, never resent.
+                try:
+                    archive_cascade(str(self.memory.memory_dir), channel_id,
+                                    messages[_turn_start_idx:])
+                except Exception as _e:
+                    log.warning(f"cascade archive failed: {_e}")
                 return final_text
 
             if response.stop_reason == "max_tokens":
