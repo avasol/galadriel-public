@@ -45,6 +45,15 @@
   .tb-btn:hover{background:rgba(232,184,120,.08);border-color:rgba(232,184,120,.4)}
   .tb-btn.danger{color:#d98a8a}
   .tb-btn.danger:hover{border-color:rgba(217,138,138,.5)}
+  /* THE HEADING DIAL (v0.25.15 port) */
+  .compass-dial{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#d8b46a;
+    background:#0c0b09;border:1px solid rgba(216,180,106,.35);border-radius:7px;
+    padding:5px 8px;cursor:pointer;outline:none;max-width:210px;min-width:120px}
+  .compass-dial:focus{border-color:rgba(216,180,106,.65)}
+  .compass-dial option{background:#161310;color:#ece4d6}
+  .compass-confirm{font-family:'JetBrains Mono',monospace;font-size:11px;
+    color:#9fd29a;opacity:0;transition:opacity .3s;white-space:nowrap;align-self:center}
+  .compass-confirm.show{opacity:1}
 
   /* ── stage: chat + cache panel ── */
   .stage{flex:1;display:flex;min-height:0;overflow:hidden}
@@ -126,6 +135,11 @@
      --><span id="dream-moon" class="dream-moon" hidden></span></small>
     </div>
     <div class="tb-actions">
+      <select class="compass-dial" id="compassDial" title="Heading — the open palace corridor"
+              onchange="onDialChange(this.value)" style="display:none">
+        <option value="">🧭 no heading</option>
+      </select>
+      <span class="compass-confirm" id="compassConfirm" style="display:none">✓</span>
       <a href="/" class="tb-btn">Tower</a>
       <button class="tb-btn danger" id="clearBtn">Clear</button>
     </div>
@@ -334,6 +348,38 @@
 
   refresh();
 })();
+
+  // ── THE HEADING DIAL (v0.25.15) — /api/vision backed ──────────────────
+  async function loadCompass(){
+    try{
+      const j = await (await fetch('/api/vision')).json();
+      const dial = document.getElementById('compassDial');
+      if(!dial) return;
+      const available = j.available || [];
+      const active = j.active || null;
+      dial.innerHTML = '<option value="">🧭 no heading</option>';
+      available.forEach(function(v){
+        var opt = document.createElement('option');
+        opt.value = v; opt.textContent = '🧭 ' + v;
+        if(v === active) opt.selected = true;
+        dial.appendChild(opt);
+      });
+      if(!active) dial.value = '';
+      if(available.length){ dial.style.display=''; document.getElementById('compassConfirm').style.display=''; }
+    }catch(e){}
+  }
+  async function onDialChange(val){
+    try{
+      await fetch('/api/vision',{method:'POST',headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name: val || ''})});
+      var c=document.getElementById('compassConfirm');
+      c.textContent = val ? ('✓ '+val) : '✓ cleared';
+      c.classList.add('show'); setTimeout(function(){c.classList.remove('show');},2000);
+    }catch(e){}
+  }
+  loadCompass();
+  setInterval(loadCompass, 30000);
+  // ───────────────────────────────────────────────────────────────────────
 </script>
 </body>
 </html>
