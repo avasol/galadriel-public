@@ -26,7 +26,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-log = logging.getLogger("harness.fresh_narrative")
+log = logging.getLogger("galadriel.fresh_narrative")
 
 
 def _est_tokens(obj) -> int:

@@ -63,17 +63,23 @@ class AnthropicProvider:
                 api_key=api_key or os.environ["ANTHROPIC_API_KEY"]
             )
 
-    async def complete(self, *, model, max_tokens, system, tools, messages):
+    async def complete(self, *, model, max_tokens, system, tools, messages,
+                       thinking=None):
         # IDENTICAL to the original agent.py:555 call. cache_control markers on
         # system[0] / tools[-1] / messages[-1] are passed through untouched —
         # they are attached upstream and ARE the caching contract.
-        return await self.client.messages.create(
+        # `thinking` (THE MIRROR, ported from the private harness) is additive:
+        # absent -> byte-identical call, the parity contract holds.
+        kwargs = dict(
             model=model,
             max_tokens=max_tokens,
             system=system,
             tools=tools,
             messages=messages,
         )
+        if thinking:
+            kwargs["thinking"] = thinking
+        return await self.client.messages.create(**kwargs)
 
     def usage(self, raw) -> Usage:
         u = raw.usage

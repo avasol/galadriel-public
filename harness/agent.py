@@ -50,12 +50,42 @@ CONTEXT_WINDOW_DEFAULT = 200_000  # tokens — applies to Sonnet/Opus/Haiku 4.x
 # Only list explicit overrides here. Anything unknown falls back to the default.
 CONTEXT_WINDOW_OVERRIDES = {
     # 1M-context models
-    "claude-opus-4-5-1m": 1_000_000,
+    "claude-opus-4-5-1m":  1_000_000,
     "claude-sonnet-4-5-1m": 1_000_000,
-    "claude-opus-4-7": 1_000_000,
-    "claude-opus-4-8": 1_000_000,
-    "claude-opus-4-6": 1_000_000,
+    "claude-opus-4-7":     1_000_000,
+    "claude-opus-4-8":     1_000_000,
+    "claude-fable-5":      1_000_000,
+    "claude-sonnet-5":     1_000_000,
+    "claude-opus-5":       1_000_000,
+    "claude-sonnet-4-6":   1_000_000,
+    "claude-opus-4-6":     1_000_000,
 }
+
+# Populated at first agent init from client.models.list(). Falls back to
+# CONTEXT_WINDOW_OVERRIDES if the API call fails. Safe to read; never written
+# after the first successful discovery.
+_DISCOVERED_CONTEXT_WINDOWS: dict[str, int] = {}
+_DISCOVERY_DONE = False
+
+
+def _run_model_discovery(api_key: str) -> None:
+    """Query Anthropic's model list and cache max_input_tokens per model id.
+    Called once at agent init. Silently skips on any error — fallback table covers."""
+    global _DISCOVERED_CONTEXT_WINDOWS, _DISCOVERY_DONE
+    if _DISCOVERY_DONE:
+        return
+    try:
+        import anthropic as _ant
+        client = _ant.Anthropic(api_key=api_key)
+        for m in client.models.list().data:
+            ctx = getattr(m, "max_input_tokens", None)
+            if ctx and isinstance(ctx, int):
+                _DISCOVERED_CONTEXT_WINDOWS[m.id] = ctx
+        log.info(f"Model discovery: {len(_DISCOVERED_CONTEXT_WINDOWS)} models loaded from API.")
+    except Exception as exc:
+        log.warning(f"Model discovery failed (using fallback table): {exc}")
+    finally:
+        _DISCOVERY_DONE = True
 
 WARN_TIER_ATTENTION = "attention"  # 90%
 WARN_TIER_URGENT = "urgent"        # 95%
@@ -66,7 +96,36 @@ def _resolve_context_window(model: str) -> int:
     env = os.environ.get("AGENT_CONTEXT_WINDOW")
     if env and env.isdigit():
         return int(env)
-    return CONTEXT_WINDOW_OVERRIDES.get(model.lower(), CONTEXT_WINDOW_DEFAULT)
+    key = model.lower()
+    # Live API discovery takes priority; static overrides are the fallback.
+    return (
+        _DISCOVERED_CONTEXT_WINDOWS.get(key)
+        or CONTEXT_WINDOW_OVERRIDES.get(key)
+        or CONTEXT_WINDOW_DEFAULT
+    )
+
+
+def _get_supreme_model() -> str:
+    """Return the highest-ranked model id from the live discovery table.
+
+    Ranking: claude family tier (opus > sonnet > haiku) x version number.
+    Falls back gracefully to the static override table if discovery hasn't run
+    or returned nothing. If both tables are empty, returns claude-opus-4-6
+    as a safe default (it is always in the override table).
+    """
+    import re as _re
+
+    def _rank(mid: str) -> tuple:
+        m = mid.lower()
+        tier = 3 if "opus" in m else (2 if "sonnet" in m else 1)
+        nums = tuple(int(x) for x in _re.findall(r"\d+", m))
+        return (tier, nums)
+
+    candidates = dict(CONTEXT_WINDOW_OVERRIDES)
+    candidates.update(_DISCOVERED_CONTEXT_WINDOWS)  # live table wins on conflict
+    if not candidates:
+        return "claude-opus-4-6"
+    return max(candidates.keys(), key=_rank)
 
 
 def _format_context_warning(pct: int, tier: str, tokens_used: int, window: int) -> str:
@@ -83,6 +142,20 @@ def _format_context_warning(pct: int, tier: str, tokens_used: int, window: int) 
         f"responses risk truncation. Consider `/compact` or `/new` before the "
         f"next exchange.*"
     )
+
+
+def _thinking_digest(texts: list, limit: int = 750) -> str:
+    """Fold the turn's thinking into a Discord spoiler bar. Truncated,
+    pipe-sanitised (|| inside a spoiler breaks the fold), empty when there is
+    nothing worth showing. Raw chain-of-thought is rummaging, not reasoning —
+    a short fold is truer optics than a dump."""
+    joined = " · ".join(t.strip() for t in texts if t and t.strip())
+    if not joined:
+        return ""
+    joined = joined.replace("|", "\u2223")  # U+2223, renders alike, never unfolds
+    if len(joined) > limit:
+        joined = joined[:limit].rsplit(" ", 1)[0] + " …"
+    return f"💭 ||{joined}||"
 
 
 def _serialize_content(content):
@@ -458,7 +531,22 @@ class GaladrielAgent:
         self.approval_callback = approval_callback
         self.last_usage: dict = {}  # Populated after each API call; used by /status
 
-        # Context-window tracking
+        # THE MIRROR: extended thinking on the Anthropic path. 0 disables.
+        # Budget clamped to the provider floor (1024) and to max_tokens-1024
+        # so the answer always has room. Ported from the private harness.
+        _mb = int(os.environ.get("AGENT_THINKING_BUDGET", "0"))
+        self.thinking_budget = 0 if _mb <= 0 else max(
+            1024, min(_mb, self.max_tokens - 1024))
+        # THE ADAPTIVE MIRROR: thinking dialect learned per model. Newer
+        # brains (Opus 4.8+) reject {"type":"enabled"} and demand
+        # {"type":"adaptive"}; some reject thinking entirely. Never a
+        # hardcoded model table — the API corrects us once, we remember.
+        self._thinking_modes: dict = {}
+        # Discord surfacing: "digest" (spoiler-fold) | "off"
+        self.show_thinking = os.environ.get("AGENT_SHOW_THINKING", "off")
+
+        # Context-window tracking — discover live from the API on first init
+        _run_model_discovery(os.environ.get("ANTHROPIC_API_KEY", ""))
         self.context_window = _resolve_context_window(self.model)
 
         # THE MEASURED KEEP: token-budget history retention.
@@ -827,6 +915,36 @@ class GaladrielAgent:
         except Exception:
             log.debug("Could not log usage fields", exc_info=True)
 
+    def _thinking_param(self):
+        """The thinking dialect this model is known to speak. None = silent."""
+        if not self.thinking_budget:
+            return None
+        mode = self._thinking_modes.get(self.model, "enabled")
+        if mode is None:
+            return None
+        if mode == "adaptive":
+            return {"type": "adaptive"}
+        return {"type": "enabled", "budget_tokens": self.thinking_budget}
+
+    def _adapt_thinking_dialect(self, err) -> bool:
+        """Learn from a thinking-dialect rejection. Returns True if the call
+        should be retried with the corrected dialect (or without thinking).
+        Ladder: enabled -> adaptive (when the API says so) -> None."""
+        if not self.thinking_budget:
+            return False
+        msg = str(err)
+        current = self._thinking_modes.get(self.model, "enabled")
+        if ("thinking.type.enabled" in msg and "adaptive" in msg
+                and current == "enabled"):
+            self._thinking_modes[self.model] = "adaptive"
+            log.info(f"thinking dialect: {self.model} speaks adaptive — retrying")
+            return True
+        if "thinking" in msg and "not supported" in msg and current is not None:
+            self._thinking_modes[self.model] = None
+            log.info(f"thinking dialect: {self.model} declines thinking — dropped")
+            return True
+        return False
+
     async def respond(self, user_message: str | list, channel_id: str = "default") -> str:
         messages = self._get_messages(channel_id)
         messages.append({"role": "user", "content": user_message})
@@ -848,6 +966,7 @@ class GaladrielAgent:
                      if isinstance(b, dict) and b.get("type") == "text")
         shadow_observe(str(self.memory.memory_dir), channel_id, _signal_text, messages)
         _turn_start_idx = max(0, len(messages) - 1)
+        turn_thinking: list = []  # ThinkingBlock texts for this turn
         _trace_turn = _uuid.uuid4().hex
         _trace_seq = 0
 
@@ -897,13 +1016,23 @@ class GaladrielAgent:
             # This advances the messages-cache breakpoint as the conversation
             # grows, giving hits within tool_use cascades.
             messages_for_api = _attach_trailing_cache_control(messages)
-            response = await self.provider.complete(
+            call_kwargs = dict(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 system=system_blocks,
                 tools=self.tools,
                 messages=messages_for_api,
             )
+            try:
+                response = await self.provider.complete(
+                    **call_kwargs, thinking=self._thinking_param())
+            except Exception as e:
+                # THE ADAPTIVE MIRROR: if the brain rejected our thinking
+                # dialect, learn the correction once and retry immediately.
+                if not self._adapt_thinking_dialect(e):
+                    raise
+                response = await self.provider.complete(
+                    **call_kwargs, thinking=self._thinking_param())
 
             self._log_usage(response)
             # THE GLASS PROMPT: trace this provider call.
@@ -929,6 +1058,11 @@ class GaladrielAgent:
             # Now serialize for storage
             assistant_content = _serialize_content(response.content)
             messages.append({"role": "assistant", "content": assistant_content})
+            if isinstance(assistant_content, list):
+                for _blk in assistant_content:
+                    if isinstance(_blk, dict) and _blk.get("type") == "thinking" \
+                            and _blk.get("thinking"):
+                        turn_thinking.append(_blk["thinking"])
             log.info(f"Response stop_reason: {response.stop_reason}")
 
             if response.stop_reason == "end_turn":
@@ -944,6 +1078,10 @@ class GaladrielAgent:
                 # the literal "(no response)" which got piped verbatim to
                 # Discord and confused the user.
                 final_text = "\n".join(text_parts).strip() if text_parts else ""
+                if final_text and self.show_thinking == "digest":
+                    digest = _thinking_digest(turn_thinking)
+                    if digest:
+                        final_text = f"{digest}\n\n{final_text}"
                 user_summary = user_message[:100] if isinstance(user_message, str) else "[multimodal message]"
                 self.memory.append_daily_log(
                     f"[chat:{channel_id}] User: {user_summary}..."
