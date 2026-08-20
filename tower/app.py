@@ -180,6 +180,136 @@ def create_tower(agent, scheduler=None) -> Flask:
             "model": getattr(agent, "model", ""),
         })
 
+
+    @app.route("/api/palace-stats", methods=["GET"])
+    def api_palace_stats():
+        """Live MemPalace capacity metrics.
+
+        Reads ChromaDB and SQLite directly — no embedding queries, no model
+        calls, sub-100 ms. Designed to be polled periodically by the Tower UI.
+
+        Returns:
+          drawers          — documents in the main palace collection
+          closets          — documents in the closets collection
+          kg_total         — KG triples (all time)
+          kg_active        — currently valid triples (valid_to IS NULL)
+          chroma_mb        — size of chroma.sqlite3 in MB
+          hnsw_mb          — size of the HNSW vector index directory in MB
+          palace_mb        — total palace directory size in MB
+          embeddings_queue — pending HNSW writes (backlog indicator)
+          acquire_write_rows — WAL-contention indicator (should be near 0 after vacuum)
+          db_pages         — SQLite page count
+          db_freelist      — SQLite freelist pages (fragmentation)
+          hnsw_capacity_pct — drawers / 2_000_000 (practical HNSW limit) × 100
+          chroma_warn      — bool, chroma_mb > 800
+          queue_warn       — bool, embeddings_queue > 1000
+        """
+        import sqlite3 as _sqlite3
+        import os as _os
+
+        # ── locate palace path ──
+        from harness import palace as _palace
+        palace_path = _palace._palace_path()
+        chroma_db   = _os.path.join(palace_path, "chroma.sqlite3")
+        kg_db       = _os.path.join(_os.path.dirname(palace_path), "knowledge_graph.sqlite3")
+
+        result = {
+            "drawers": 0, "closets": 0,
+            "kg_total": 0, "kg_active": 0,
+            "chroma_mb": 0.0, "hnsw_mb": 0.0, "palace_mb": 0.0,
+            "embeddings_queue": 0, "acquire_write_rows": 0,
+            "db_pages": 0, "db_freelist": 0,
+            "hnsw_capacity_pct": 0.0,
+            "chroma_warn": False, "queue_warn": False,
+            "error": None,
+        }
+
+        try:
+            # ── ChromaDB collection counts (direct SQLite — avoids spinning up
+            #    a full client and waking the embedding model) ──
+            if _os.path.exists(chroma_db):
+                db = _sqlite3.connect(f"file:{chroma_db}?mode=ro", uri=True,
+                                      timeout=5, check_same_thread=False)
+                db.execute("PRAGMA query_only = ON")
+                try:
+                    # collection id → name
+                    colls = {row[0]: row[1] for row in
+                             db.execute("SELECT id, name FROM collections").fetchall()}
+                    # segment id → collection id
+                    segs  = {row[0]: row[1] for row in
+                             db.execute("SELECT id, collection FROM segments").fetchall()}
+
+                    # segments: id, type, scope, collection
+                    # embeddings: id, segment_id, embedding_id, seq_id, created_at
+                    # A collection has two segments: metadata (non-zero count)
+                    # and HNSW index (always 0 in the embeddings table).
+                    # Sum across all segments per collection to get live doc count.
+                    coll_counts: dict = {}
+                    for seg_id, coll_id in segs.items():
+                        n = db.execute(
+                            "SELECT COUNT(*) FROM embeddings WHERE segment_id = ?", (seg_id,)
+                        ).fetchone()[0]
+                        coll_counts[coll_id] = coll_counts.get(coll_id, 0) + n
+                    for coll_id, n in coll_counts.items():
+                        cname = colls.get(coll_id, "")
+                        if "drawers" in cname:
+                            result["drawers"] = n
+                        elif "closets" in cname:
+                            result["closets"] = n
+
+                    result["embeddings_queue"]    = db.execute("SELECT COUNT(*) FROM embeddings_queue").fetchone()[0]
+                    result["acquire_write_rows"]  = db.execute("SELECT COUNT(*) FROM acquire_write").fetchone()[0]
+                    result["db_pages"]            = db.execute("PRAGMA page_count").fetchone()[0]
+                    result["db_freelist"]         = db.execute("PRAGMA freelist_count").fetchone()[0]
+                finally:
+                    db.close()
+
+                result["chroma_mb"] = round(_os.path.getsize(chroma_db) / 1e6, 1)
+
+            # ── HNSW index dirs ──
+            hnsw_bytes = 0
+            if _os.path.isdir(palace_path):
+                for entry in _os.scandir(palace_path):
+                    if entry.is_dir():
+                        for f in _os.scandir(entry.path):
+                            if f.is_file():
+                                try:
+                                    hnsw_bytes += f.stat().st_size
+                                except OSError:
+                                    pass
+            result["hnsw_mb"] = round(hnsw_bytes / 1e6, 1)
+
+            # ── total palace dir ──
+            total_bytes = hnsw_bytes
+            if _os.path.exists(chroma_db):
+                total_bytes += _os.path.getsize(chroma_db)
+            result["palace_mb"] = round(total_bytes / 1e6, 1)
+
+            # ── KG ──
+            if _os.path.exists(kg_db):
+                kg = _sqlite3.connect(f"file:{kg_db}?mode=ro", uri=True,
+                                      timeout=5, check_same_thread=False)
+                kg.execute("PRAGMA query_only = ON")
+                try:
+                    result["kg_total"]  = kg.execute("SELECT COUNT(*) FROM triples").fetchone()[0]
+                    result["kg_active"] = kg.execute(
+                        "SELECT COUNT(*) FROM triples WHERE valid_to IS NULL"
+                    ).fetchone()[0]
+                finally:
+                    kg.close()
+
+            # ── derived ──
+            HNSW_PRACTICAL_LIMIT = 2_000_000
+            result["hnsw_capacity_pct"] = round(result["drawers"] / HNSW_PRACTICAL_LIMIT * 100, 2)
+            result["chroma_warn"] = result["chroma_mb"] > 800
+            result["queue_warn"]  = result["embeddings_queue"] > 1000
+
+        except Exception as exc:
+            result["error"] = str(exc)
+            log.warning(f"palace-stats error: {exc}")
+
+        return jsonify(result)
+
     # ── Vision API ───────────────────────────────────────────────
 
     @app.route("/api/vision", methods=["GET"])
