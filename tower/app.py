@@ -73,7 +73,10 @@ def create_tower(agent, scheduler=None) -> Flask:
                 # 5 min: a heavy first turn (long letter + full memory/palace load
                 # on a fresh body) can legitimately exceed 2 min on a big model.
                 response = future.result(timeout=300)
-                return jsonify({"response": response, "usage": getattr(agent, "last_usage", {}) or {}})
+                trim_count = getattr(agent, "last_trim_count", 0)
+                if trim_count:
+                    agent.last_trim_count = 0  # clear after read
+                return jsonify({"response": response, "usage": getattr(agent, "last_usage", {}) or {}, "trim_count": trim_count})
             except FuturesTimeout:
                 # Don't drop the connection (-> browser 'Failed to fetch'); the
                 # mind is still thinking. Tell the user honestly so they can wait
@@ -91,7 +94,10 @@ def create_tower(agent, scheduler=None) -> Flask:
                 response = loop.run_until_complete(
                     agent.respond(message, channel_id="tower")
                 )
-                return jsonify({"response": response, "usage": getattr(agent, "last_usage", {}) or {}})
+                trim_count = getattr(agent, "last_trim_count", 0)
+                if trim_count:
+                    agent.last_trim_count = 0  # clear after read
+                return jsonify({"response": response, "usage": getattr(agent, "last_usage", {}) or {}, "trim_count": trim_count})
             except Exception as e:
                 log.exception("Tower chat error")
                 return jsonify({"error": str(e)}), 500

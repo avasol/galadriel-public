@@ -106,9 +106,14 @@
   .mval.ok{color:#9fd29a}
   .ctx-wrap{margin-top:22px}
   .ctx-head{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#8a8170;margin-bottom:8px}
-  .ctx-rail{position:relative;height:200px;border:1px solid var(--line);border-radius:9px;background:#100e0b;overflow:hidden;display:flex;flex-direction:column-reverse}
-  .ctx-fill{width:100%;height:0;background:linear-gradient(180deg,#e8b878,#b07d3c);transition:height .5s cubic-bezier(.2,.8,.2,1)}
-  .ctx-legend{font-size:11px;color:#6f6757;margin-top:8px;display:flex;justify-content:space-between}
+  .ctx-rail{position:relative;height:160px;border:1px solid var(--line);border-radius:9px;background:#100e0b;overflow:hidden;display:flex;flex-direction:column-reverse}
+  .ctx-fill{width:100%;height:0;background:linear-gradient(0deg,#e8b878 0%,#d4a050 60%,rgba(232,184,120,.4) 100%);transition:height .6s cubic-bezier(.2,.8,.2,1)}
+  .ctx-legend{font-size:11px;color:#6f6757;margin-top:8px;display:flex;justify-content:space-between;align-items:baseline}
+  .compact-event{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#9fd29a;
+    background:rgba(159,210,154,.08);border:1px solid rgba(159,210,154,.2);
+    border-radius:6px;padding:6px 10px;margin-top:10px;text-align:center}
+  .compact-event.fade-out{animation:compact-fade 6s ease forwards}
+  @keyframes compact-fade{0%{opacity:1}70%{opacity:1}100%{opacity:0;display:none}}
   .panel-note{font-size:11px;line-height:1.55;color:#6f6757;margin-top:18px}
   @media(max-width:820px){.cachepanel{position:fixed;right:0;top:0;bottom:0;z-index:40;box-shadow:-12px 0 40px rgba(0,0,0,.5)}}
 </style>
@@ -172,10 +177,11 @@
         <div class="metric"><span class="mlabel">cache reads</span><span class="mval" id="mReads">0</span></div>
         <div class="metric"><span class="mlabel">est. saved</span><span class="mval ok" id="mSaved" title="Estimate: cached input tokens billed at ~10% of the base rate. Counts only — your conversation never leaves this machine.">&approx; $0.0000</span></div>
         <div class="ctx-wrap">
-          <div class="ctx-head">context this session</div>
+          <div class="ctx-head">conversation depth</div>
           <div class="ctx-rail" id="ctxRail"><div class="ctx-fill" id="ctxFill"></div></div>
-          <div class="ctx-legend"><span id="ctxTok">0 tok</span><span>200k</span></div>
+          <div class="ctx-legend"><span id="ctxTok">0 tok</span><span style="color:#5a5248;font-size:10px;">conv headroom</span></div>
         </div>
+        <div id="compactEvent" class="compact-event" style="display:none;"></div>
         <div class="panel-note">These numbers are real — read from the model's own usage on your last reply. Nothing here is sent anywhere; your conversation stays on this machine.</div>
       </div>
     </aside>
@@ -253,7 +259,7 @@
           return;
         }
         bodyEl.innerHTML=md(resp);
-        if(d.usage) recordUsage(d.usage);
+        if(d.usage) recordUsage(d.usage, d.trim_count||0);
         $scroll.scrollTop=$scroll.scrollHeight; $send.disabled=false; setLive(false); refresh();
       })
       .catch(function(err){
@@ -307,18 +313,41 @@
   var totReads=0, savedUSD=0, turns=0, hitTurns=0, ctxTokens=0;
   function fmt(n){return n>=1000?(n/1000).toFixed(n>=10000?0:1)+'k':String(n);}
   function setLive(on){document.getElementById('liveDot').classList.toggle('on',on);}
-  function recordUsage(u){
+  var totConvTokens=0;  // cumulative conversation tokens (excludes stable cached prefix)
+  function recordUsage(u, trimCount){
     turns++;
     var read=u.cache_read||0, write=u.cache_write||0, inp=u.input||0, outp=u.output||0;
     totReads+=read; if(read>0)hitTurns++;
     savedUSD+=read*PRICE_TOK*CACHE_SAVE_FRAC;
-    ctxTokens=inp+read+write+outp;  // the prompt size of the latest turn
+    // Conversation depth = new input tokens + output this turn.
+    // cache_read is the stable cached prefix (soul + memory + tools) — it doesn't
+    // grow with the conversation, so we exclude it from the context bar.
+    // cache_write covers newly-written prefix blocks — also stable overhead.
+    var convDelta = inp + outp;
+    totConvTokens = Math.max(totConvTokens, convDelta);
     document.getElementById('mReads').textContent=fmt(totReads);
     document.getElementById('mHit').textContent=turns?Math.round(hitTurns/turns*100)+'%':'\u2014';
     document.getElementById('mSaved').textContent='\u2248 $'+savedUSD.toFixed(4);
-    var pct=Math.min(100,Math.round(ctxTokens/CTX_MAX*100));
+    // Bar: conversation contribution against a 30k headroom (ctx above the cached prefix).
+    // The full window is 200k; the prefix occupies ~170k. Show how much of the
+    // remaining ~30k the conversation is using. Cap display at 100%.
+    var CONV_BUDGET = 30000;
+    var pct=Math.min(100,Math.round(totConvTokens/CONV_BUDGET*100));
     document.getElementById('ctxFill').style.height=pct+'%';
-    document.getElementById('ctxTok').textContent=fmt(ctxTokens)+' tok';
+    document.getElementById('ctxTok').textContent=fmt(totConvTokens)+' tok';
+    // Compaction event
+    if(trimCount && trimCount>0){
+      showCompactionEvent(trimCount);
+    }
+  }
+  function showCompactionEvent(count){
+    var el=document.getElementById('compactEvent');
+    if(!el) return;
+    el.textContent='\u21bb '+count+' msg'+(count===1?'':'s')+' compacted';
+    el.style.display='block';
+    el.classList.remove('fade-out');
+    void el.offsetWidth;  // reflow to restart animation
+    el.classList.add('fade-out');
   }
 
   // panel fold/unfold
@@ -343,7 +372,7 @@
 
   // ── seed the panel with the last real usage, if any ──
   fetch('/api/usage').then(function(r){return r.json();}).then(function(u){
-    if(u && (u.cache_read||u.input||u.output)) recordUsage(u);
+    if(u && (u.cache_read||u.input||u.output)) recordUsage(u, 0);
   }).catch(function(){});
 
   refresh();

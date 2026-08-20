@@ -530,6 +530,7 @@ class GaladrielAgent:
         self.conversations: dict[str, list] = {}
         self.approval_callback = approval_callback
         self.last_usage: dict = {}  # Populated after each API call; used by /status
+        self.last_trim_count: int = 0  # Messages dropped in the most recent trim; cleared after read
 
         # THE MIRROR: extended thinking on the Anthropic path. 0 disables.
         # Budget clamped to the provider floor (1024) and to max_tokens-1024
@@ -734,6 +735,7 @@ class GaladrielAgent:
             if safe_cut > 0:
                 if archive_before_trim:
                     self._archive_trim_slice(messages[:safe_cut], channel_id)
+                self.last_trim_count = safe_cut
                 del messages[:safe_cut]
                 log.info(f"Trimmed conversation to {len(messages)} messages (cut {safe_cut} from front)")
             return
@@ -753,6 +755,7 @@ class GaladrielAgent:
             if msg.get("role") == "user" and not _contains_tool_result(msg):
                 if archive_before_trim and i > 0:
                     self._archive_trim_slice(messages[:i], channel_id)
+                self.last_trim_count = i
                 del messages[:i]
                 log.info(f"Fallback trim: kept from last plain user msg, now {len(messages)} messages")
                 return
