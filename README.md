@@ -697,6 +697,77 @@ See `.env.example` for the full list with inline documentation.
 
 ## Security Notes
 
+
+---
+
+## Tower API
+
+The Tower web server (`tower/app.py`) exposes a REST API at `localhost:8080`. All endpoints are GET or POST with JSON bodies/responses.
+
+### Chat & history
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/chat` | POST `{message}` | Send a message; returns `{response, usage, trim_count}` |
+| `/api/history?channel=tower` | GET | Conversation history for a channel |
+| `/api/clear` | POST `{channel}` | Clear conversation history |
+| `/api/usage` | GET | Last API call token usage `{input, cache_read, cache_write, output, model}` |
+
+### Palace & memory
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/palace-stats` | GET | **Live MemPalace capacity** — see below |
+| `/api/memory?date=YYYY-MM-DD` | GET | Daily memory log for a date |
+| `/api/dreams` | GET | `{has_dreams, count}` — whether ambient reflection has filed anything |
+
+### Scheduler & vision
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/scheduler` | GET | Scheduler state — pending wake, heartbeat config, loops |
+| `/api/scheduler/heartbeat` | POST | Arm a recurring heartbeat task |
+| `/api/scheduler/wake` | POST `{prompt}` | Arm a one-shot wake to fire after the next restart |
+| `/api/vision` | GET | Current active vision / corridor |
+| `/api/vision` | POST `{name}` | Switch the active heading |
+
+### `/api/palace-stats` — MemPalace capacity
+
+Read-only SQLite queries against `chroma.sqlite3` and `knowledge_graph.sqlite3`. No embedding model, no chromadb client — sub-100 ms on any hardware.
+
+```json
+{
+  "drawers": 102226,
+  "closets": 1761,
+  "kg_total": 218,
+  "kg_active": 210,
+  "chroma_mb": 833.5,
+  "hnsw_mb": 396.4,
+  "palace_mb": 1230.0,
+  "embeddings_queue": 522,
+  "acquire_write_rows": 4837,
+  "db_pages": 203502,
+  "db_freelist": 786,
+  "hnsw_capacity_pct": 5.11,
+  "chroma_warn": true,
+  "queue_warn": false,
+  "error": null
+}
+```
+
+**Capacity limits and thresholds:**
+
+| Metric | Warn at | Hard concern at | Notes |
+|---|---|---|---|
+| `hnsw_capacity_pct` | 50% | 80% | HNSW practical limit ~2M docs per collection; perf degrades above this |
+| `chroma_mb` | 800 MB | 1,200 MB | `embedding_metadata` (1 row per embedding × 13 metadata fields) is the size driver |
+| `embeddings_queue` | 1,000 | 5,000 | Pending HNSW writes; large backlog = index lagging behind inserts |
+| `acquire_write_rows` | — | — | WAL contention artifact; vacuum `chroma.sqlite3` if this exceeds ~10k |
+
+The Tower UI panel shows two live capacity meters — HNSW % of practical limit and Chroma DB size vs 1.2 GB threshold — with colour coding: green < 50 %, amber < 80 %, red ≥ 80 %.
+
+---
+
 **Before running on a public server, read this.**
 
 **Tower UI has no authentication.** It's designed to run on `127.0.0.1` and be accessed via SSH tunnel. Binding it to `0.0.0.0` on a server with an open port gives anyone who can reach that port full agent access — which includes shell execution.
@@ -714,6 +785,16 @@ See `.env.example` for the full list with inline documentation.
 ---
 
 ## Release Notes
+
+### 1.24 — Tower: MemPalace capacity panel + context bar fix
+
+Two Tower UI fixes and one new panel:
+
+**Cache/context bar was lying.** `ctxTokens` was calculated as `inp + cache_read + cache_write + outp` — which includes the ~170k cached prefix (soul + memory + tools). The bar read as nearly full from turn 1. Fixed: the bar now shows `inp + outp` — the conversation's contribution only — measured against the ~30k headroom above the cached prefix. Starts at 0; grows as the dialogue deepens. Label updated to "conversation depth / conv headroom."
+
+**Compaction was invisible.** When `_trim_history` fired it dropped messages silently. Fixed: `agent.py` now sets `self.last_trim_count` at trim time; `app.py` reads and clears it atomically and includes it in the `/api/chat` response; the UI shows a green **↻ N msgs compacted** pill with a 6 s fade-out.
+
+**MemPalace capacity panel.** New `GET /api/palace-stats` endpoint reads `chroma.sqlite3` and `knowledge_graph.sqlite3` directly — no embedding model, sub-100 ms. Returns drawer count, closet count, KG triple count (active/total), disk sizes (chroma DB, HNSW index, total), write queue depth, and derived capacity percentages. The Tower sidebar shows six metric rows and two colour-coded capacity meters (HNSW % of 2M practical limit; Chroma DB size vs 1.2 GB threshold). Auto-refreshes every 5 minutes.
 
 ### 1.23 — Discord bot: `/help` + a chunking-UX fix, and a safety-critical approval-gate fix
 
