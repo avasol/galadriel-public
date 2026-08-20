@@ -538,6 +538,81 @@ Fill in your real values and she'll orient herself correctly from the first mess
 
 ---
 
+
+---
+
+## Compass — project-scoped memory
+
+The **compass** is the active-project system. Set a heading and the mind reconfigures across four layers simultaneously — without a restart, without re-teaching, without cache invalidation beyond what actually changed.
+
+### What the heading does
+
+**1. Loads the project's vision file into the cached prefix.**
+A file in `config/visions/<name>.md` is read and folded into the stable system-prompt block that rides the Anthropic prompt cache. The agent wakes every session knowing the roadmap, disciplines, and live status of the active project — no tool call needed.
+
+**2. Filters config files to the project (via `context_scope.json`).**
+Each `.md` in `config/` can declare which visions it belongs to. When the heading is `aedelgard`, only files tagged `["aedelgard"]` enter the prefix alongside the core identity files. A `persona-verse` roadmap is excluded; a Palantír vision spec is included only for Palantír work. Switching headings swaps the context silently, costs one cache-write for the changed config slice, and re-reads at 10 % of base input cost on every subsequent call.
+
+```json
+// config/context_scope.json (excerpt)
+{
+  "ROADMAP_aedelgard.md":    ["aedelgard"],
+  "AEDELGARD_DISCIPLINES.md": ["aedelgard"],
+  "PERSONA_VERSE_STATUS.md": ["persona-verse"],
+  "TOOLS.md":                ["@ops"]
+}
+```
+
+**3. Injects a per-turn scoping banner into the dynamic block.**
+On every turn the active project name is written into the *uncached* dynamic portion of the prompt (so toggling it is instant — no cache churn):
+
+```
+# Active Project: `aedelgard`
+
+Scope your palace queries when this project is in play:
+  palace_search(query=..., hall="aedelgard")
+Cast wider only if the scoped search returns nothing.
+```
+
+**4. Tags every memory filed during the session to the heading's hall.**
+Any drawer written while a heading is active inherits that `hall` in its metadata. A future `palace_search(..., hall="aedelgard")` retrieves it precisely, without touching the other 100k+ drawers in the corpus.
+
+### How the hall filter works
+
+When `hall` is passed to `palace_search`, the query bypasses the full-corpus BM25 ranker and hits ChromaDB directly with a `where={"hall": hall}` clause:
+
+```python
+# harness/palace.py
+res = coll._collection.query(
+    query_texts=[query],
+    n_results=k,
+    where={"hall": hall},   # ← native metadata filter
+)
+```
+
+Semantic similarity is preserved; the search space collapses from the full collection to the matching subset. 102,226 drawers narrows to the dozens tagged to the active project. Signal-to-noise improves dramatically for deep-focus work.
+
+### Combining filters
+
+`palace_search` accepts `wing`, `room`, and `hall` independently and compounds them:
+
+```python
+# Scope to aedelgard decisions only
+palace_search(query="privacy claim discipline", hall="aedelgard", room="decisions")
+
+# Scope to ops work regardless of heading
+palace_search(query="restart procedure", room="harness")
+```
+
+### Switching headings
+
+Via Tower UI: the heading dial in the sidebar (`/api/vision`).
+Via shell: `echo "aedelgard" > config/active_vision.txt`
+
+The change is visible on the agent's next turn with zero cache invalidation on the stable prefix — only the per-turn dynamic block (already uncached) changes. Config files that enter or leave the scope trigger one cache-write for the affected slice, then read at 10 % cost. There is no restart.
+
+---
+
 ## Discord Commands
 
 ### Slash commands (native Discord UI — type `/` to see them)
