@@ -443,6 +443,8 @@ def _serialize_message(msg: dict) -> str:
                     f"### tool_result (id={block.get('tool_use_id', '?')})\n\n"
                     f"{block.get('content', '')}"
                 )
+            elif btype in ("thinking", "redacted_thinking"):
+                parts.append("[thinking — omitted]")
             elif btype == "image":
                 parts.append("[image block — omitted]")
             else:
