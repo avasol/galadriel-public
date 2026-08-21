@@ -2,6 +2,8 @@
 
 **A self-hosted Claude agent that remembers everything it has ever done — and rewrites its own code to get better at doing it.**
 
+![Galadriel standing before the Memory Palace](assets/galadriel_palace.png)
+
 ![Galadriel](assets/galadriel_promo.png)
 
 > *"He inferred that persons who would train this faculty must select places, and
@@ -139,9 +141,7 @@ security note are in [Run with Docker](#run-with-docker). Prefer a local Python 
 instead? See [Quick Start](#quick-start).
 
 > **Where to get an API key:** the [Anthropic Console](https://console.anthropic.com/).
-> A `claude-opus-4-8` run is the default; downgrade to Sonnet or Haiku in `.env` for a
-> cheaper agent — see [running costs](#running-costs-prompt-caching-in-practice) for
-> how caching keeps even Opus affordable.
+> A `claude-sonnet-5` run is the default; you can swap to any model via the `/model` Brain Dial or `AGENT_MODEL` in `.env` — see [running costs](#running-costs-prompt-caching-in-practice) for how caching keeps it affordable.
 
 ---
 
@@ -149,7 +149,7 @@ instead? See [Quick Start](#quick-start).
 
 Galadriel just grew a memory palace. Not a vector-DB-as-a-service. Not a paid tier. A local, embedded, verbatim store of everything she has ever written — searchable by meaning, not just keywords — with **zero Anthropic tokens spent on retrieval**.
 
-The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library. MemPalace does the real work (storage, embeddings, knowledge graph, temporal reasoning, compression). This harness adds the wrappers that expose it to the agent as **10 new tools** (14 total, up from 4) and wires it into the lifecycle — conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with her own continuity.
+The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library. MemPalace does the real work (storage, embeddings, knowledge graph, temporal reasoning, compression). This harness adds the wrappers that expose it to the agent as **13 palace tools** (17 total) and wires them into the lifecycle — conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with her own continuity.
 
 **Why this is the headline change:**
 
@@ -171,9 +171,9 @@ The integration is built on [**MemPalace**](https://github.com/MemPalace/mempala
 | Palace lookup cost for a 5-hop KG timeline | **0 tokens** — SQLite traversal runs locally |
 | Estimated annual overhead of the integration | **~$95/year** (additional) |
 | Drawers indexed on a real deployment | **706** across 7 rooms + 8 halls |
-| Tools added | **10** (palace_search, palace_add_drawer, palace_wake_up, palace_taxonomy, palace_kg_add/query/invalidate/timeline, palace_diary_write/read) |
+| Tools added | **13** palace tools (palace_search, palace_add_drawer, palace_supersede_drawer, palace_retire_drawer, palace_wake_up, palace_taxonomy, palace_kg_add/query/invalidate/timeline, palace_diary_write/read) — **17 total** |
 
-The 90% cache-read discount remains intact. Adding MemPalace costs ~1.5 percentage points of cache hit ratio (10 extra tool schemas in the tools-layer cache + a ~800-token wake-up snapshot in the dynamic block) and the rest is measured, bounded, and dial-backable (`PALACE_WAKE_UP_INJECT=0`).
+The 90% cache-read discount remains intact. Adding MemPalace costs ~1.5 percentage points of cache hit ratio (13 extra palace tool schemas in the tools-layer cache + a ~800-token wake-up snapshot in the dynamic block) and the rest is measured, bounded, and dial-backable (`PALACE_WAKE_UP_INJECT=0`).
 
 **What this means in practice:**
 
@@ -200,7 +200,7 @@ Why this matters: **rooms** let you say *"look only in the code area"*, **halls*
 
 The agent's **diary** is a separate wing — her own journal, written at end-of-session, read at wake-up. Her own voice to her future self, not mixed with operational logs.
 
-The **knowledge graph** sits alongside the drawers. Where drawers are prose, the KG is relational: `claude-opus-4-6 --[supports]--> prompt_caching` with `valid_from=2025-07-10`. When a fact changes you don't delete the old triple, you invalidate it. History is preserved; the timeline is queryable.
+The **knowledge graph** sits alongside the drawers. Where drawers are prose, the KG is relational: `claude-sonnet-5 --[supports]--> prompt_caching` with `valid_from=2026-06-01`. When a fact changes you don't delete the old triple, you invalidate it. History is preserved; the timeline is queryable.
 
 **The library is [MemPalace](https://github.com/MemPalace/mempalace).** All credit for the storage layer, the embedding pipeline, the knowledge graph, the AAAK compression dialect, and the wake-up generation belongs to the MemPalace team. This harness is a consumer — it adds the Python wrappers, the tool schemas, and the lifecycle hooks (archive-before-clear, mine-at-goodnight, inject-at-wake-up) that expose the library to a running Claude agent.
 
@@ -309,7 +309,7 @@ Prompt caching has a **minimum prefix length** before it engages. If your stable
 
 *(Source: [Anthropic prompt-caching docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) — minimum cacheable prompt length. Verify against the live table for your exact model.)*
 
-Out of the box, `config/SOUL.md` + `config/MEMORY.md` together are roughly 500–800 tokens. **That is below every threshold above** — including the 1,024-token floor for the default `claude-opus-4-8`. Caching will not engage until you cross it.
+Out of the box, `config/SOUL.md` + `config/MEMORY.md` together are roughly 500–800 tokens. **That is below every threshold above** — including the 1,024-token floor for Claude Haiku-class models. Caching will not engage until you cross it.
 
 **The fix:** fill in `config/CONTEXT.md`. Drop your project's architecture, goals, key file paths, known quirks, and current status into it. Any `*.md` file you place in `config/` is automatically loaded into the stable cache block — so adding content there is all it takes. A reasonably filled CONTEXT.md (1–2 pages of project notes) pushes the total well past the 1,024-token floor for the default Opus 4.8 — and past 4,096 too, which covers the older Opus 4.6 / 4.5 and Haiku 4.5 if you downgrade.
 
@@ -523,7 +523,7 @@ When you're ready to make her your own: edit the name, rewrite the vibe, change 
 - Server: EC2 t4g.medium, eu-north-1
 - Working Dir: /opt/galadriel
 - Python Venv: /home/ubuntu/.venv
-- Model: claude-opus-4-6
+- Model: claude-sonnet-5
 
 ## Operational Notes
 - AWS_PROFILE must be blank when using instance role
@@ -760,7 +760,7 @@ See `.env.example` for the full list with inline documentation.
 | `TOWER_HOST` | No | Tower bind address (default: `127.0.0.1`) |
 | `TOWER_PORT` | No | Tower port (default: `8080`) |
 | `TOWER_SECRET_KEY` | No | Flask session secret — change this |
-| `AGENT_MODEL` | No | Claude model (default: `claude-opus-4-8`; downgrade to `claude-sonnet-4-6` or `claude-haiku-4-5` for lower cost — see `.env.example`) |
+| `AGENT_MODEL` | No | Claude model (default: `claude-sonnet-5`; swap via `/model` at runtime or set here; see `.env.example`) |
 | `AGENT_MAX_TOKENS` | No | Max output tokens per call (default: `8192`) |
 | `MEMPALACE_PATH` | No | Palace directory — read by the [MemPalace](https://github.com/MemPalace/mempalace) library itself (default: `~/.mempalace/palace`) |
 | `PALACE_ARCHIVE_ROOT` | No | Where archived conversations + pre-compaction tool_results land before mining (default: `~/.mempalace/archive`) |
@@ -1071,7 +1071,7 @@ self-directed, all landing in `harness/scheduler.py` + the Tower API.
    heartbeat into a task monitor — the agent can watch a long-running background
    job, report each tick, and disable itself when the job completes.
 
-Also in 1.13: default model bumped to **`claude-opus-4-8`** (1M-token context),
+Also in 1.13: default model was bumped to **`claude-opus-4-8`** (1M-token context) at release — current default is **`claude-sonnet-5`** (set in `.env`),
 with explicit downgrade guidance in `.env.example` for cost-sensitive
 deployments (Sonnet / Haiku). `palace_add_drawer` gained an optional `room`
 argument for routing drawers into the relational layer. All changes are
@@ -1096,7 +1096,7 @@ All changes are additive and gracefully degrade. If MemPalace isn't installed, t
 
 ### 1.12 — MemPalace integration: persistent verbatim memory at zero API cost
 
-**10 new tools, 14 total.** The agent now has a local semantic memory palace ([MemPalace](https://github.com/MemPalace/mempalace)) wired into the harness as first-class tools: `palace_search`, `palace_add_drawer`, `palace_wake_up`, `palace_taxonomy`, `palace_kg_add / kg_query / kg_invalidate / kg_timeline`, `palace_diary_write / diary_read`. All retrieval runs locally in ChromaDB + SQLite — **zero Anthropic tokens spent on any palace operation**, including multi-hop knowledge-graph traversals that would otherwise cost real money through conversation history.
+**Palace tools wired in (17 total).** The agent now has a local semantic memory palace ([MemPalace](https://github.com/MemPalace/mempalace)) wired into the harness as first-class tools: `palace_search`, `palace_add_drawer`, `palace_wake_up`, `palace_taxonomy`, `palace_kg_add / kg_query / kg_invalidate / kg_timeline`, `palace_diary_write / diary_read`. All retrieval runs locally in ChromaDB + SQLite — **zero Anthropic tokens spent on any palace operation**, including multi-hop knowledge-graph traversals that would otherwise cost real money through conversation history.
 
 **Lifecycle hooks.** `/new`, `!new`, and `!clear` now archive the conversation to the palace *before* clearing it (via a new `GaladrielAgent.pop_and_archive_history()`), so nothing is lost at the moment of wipe. Goodnight (21:00 CET) fires `palace.archive_daily_logs()` so today's log becomes searchable overnight. `/compact` and context compaction file verbatim tool_results to the palace before they're replaced with Haiku summaries.
 
