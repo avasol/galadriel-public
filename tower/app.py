@@ -207,12 +207,6 @@ def create_tower(agent, scheduler=None) -> Flask:
         import sqlite3 as _sqlite3
         import os as _os
 
-        # ── locate palace path ──
-        from harness import palace as _palace
-        palace_path = _palace._palace_path()
-        chroma_db   = _os.path.join(palace_path, "chroma.sqlite3")
-        kg_db       = _os.path.join(_os.path.dirname(palace_path), "knowledge_graph.sqlite3")
-
         result = {
             "drawers": 0, "closets": 0,
             "kg_total": 0, "kg_active": 0,
@@ -225,6 +219,12 @@ def create_tower(agent, scheduler=None) -> Flask:
         }
 
         try:
+            # ── locate palace path ──
+            from harness import palace as _palace
+            palace_path = _palace._palace_path()
+            chroma_db   = _os.path.join(palace_path, "chroma.sqlite3")
+            kg_db       = _os.path.join(_os.path.dirname(palace_path), "knowledge_graph.sqlite3")
+
             # ── ChromaDB collection counts (direct SQLite — avoids spinning up
             #    a full client and waking the embedding model) ──
             if _os.path.exists(chroma_db):
