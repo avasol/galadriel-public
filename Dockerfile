@@ -53,6 +53,19 @@ RUN python -c "import mempalace, os, shutil; \
     shutil.copyfile('/tmp/kg_patch.py', dst); print('mempalace patched at', dst)" \
     && python -c "from mempalace.knowledge_graph import SINGLE_VALUED_PREDICATES as s; \
     assert 'named_self' in s; print('deliberator overlay verified:', sorted(s))"
+# Living Memory extension (lifecycle_status/origin/confidence + include_stale
+# stale-exclusion) — 3.8.0's rewritten miner/searcher dropped include_stale
+# entirely; without this overlay every palace search hard-fails post-upgrade.
+COPY vendor/mempalace_patches/miner.py /tmp/miner_patch.py
+COPY vendor/mempalace_patches/searcher.py /tmp/searcher_patch.py
+RUN python -c "import mempalace, os, shutil; \
+    d=os.path.dirname(mempalace.__file__); \
+    shutil.copyfile('/tmp/miner_patch.py', os.path.join(d,'miner.py')); \
+    shutil.copyfile('/tmp/searcher_patch.py', os.path.join(d,'searcher.py')); \
+    print('mempalace Living Memory patched')" \
+    && python -c "import inspect; from mempalace.searcher import search_memories; \
+    assert 'include_stale' in inspect.signature(search_memories).parameters; \
+    print('include_stale overlay verified')"
 # ───────────────────────────────────────────────────────────────────────────
 
 # Application code. .dockerignore keeps keys/, .env, memory logs and bloat out.

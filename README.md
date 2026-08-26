@@ -975,7 +975,7 @@ are treated as superseded, not deleted; the timeline still shows the whole arc.
 The patch lives in `vendor/mempalace_patches/knowledge_graph.py` and is overlaid
 onto the pip-pinned MemPalace at image-build time, with a **build-time
 self-verify** that fails the build loudly if the registry isn't present — so a
-broken overlay can never ship silently. Base MemPalace 3.3.2. The fix is the same
+broken overlay can never ship silently. Base MemPalace 3.8.0 (originally cut against 3.3.2; the miner/searcher Living Memory patches now ride alongside it — see vendor/mempalace_patches/README.md). The fix is the same
 discipline the drawer and ambient-thought layers already hold — *lifecycle, not
 overwrite* — extended to the one place it was missing: the facts a mind states
 about itself.
@@ -1104,7 +1104,7 @@ All changes are additive and gracefully degrade. If MemPalace isn't installed, t
 
 **Cache impact, measured.** 14 consecutive calls on a real deployment: 86.5% cache hit ratio, 71.2% total-input token savings vs. no caching. The 90% cache-read discount is intact — integration costs ~1.5 percentage points of cache hit ratio (one extra wake-up snapshot in dynamic, 10 more tool schemas in the tools-layer cache). Estimated annual overhead: ~$95.
 
-**Graceful degradation.** If MemPalace isn't installed, all palace tools return `[palace unavailable]` at dispatch time; the rest of the harness runs normally. Upgrade path is `pip install mempalace>=3.3.2,<3.4` + `mempalace init` + `mempalace mine .`.
+**Graceful degradation.** If MemPalace isn't installed, all palace tools return `[palace unavailable]` at dispatch time; the rest of the harness runs normally. Upgrade path is `pip install mempalace==3.8.0` + `mempalace init` + `mempalace mine .`.
 
 **Palace Protocol** codified in `SOUL.md` — 5 non-negotiable rules: verify before speaking, say "let me check" when unsure, diary at session-end, invalidate-then-add when facts change. See `config/TOOLS.md` for the full decision matrix (memory_log vs palace_add_drawer vs palace_kg_add vs palace_diary_write).
 

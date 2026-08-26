@@ -2,7 +2,7 @@ anthropic>=0.52.0
 discord.py>=2.5.0
 Flask>=3.0.0
 python-dotenv>=1.0.0
-mempalace>=3.3.2,<3.4
+mempalace==3.8.0  # PINNED EXACT (2026-08-26): vendor/mempalace_patches hand-patches miner.py+searcher.py; bumping requires re-applying the Living Memory extension (see vendor/mempalace_patches/README.md) — never let >= silently drift this
 
 # IANA tz database for zoneinfo on Windows (no system tz db) — body packaging
 tzdata
