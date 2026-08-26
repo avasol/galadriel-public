@@ -8,6 +8,18 @@ build/
 .eggs/
 memory/*.md
 memory/*.json
+# Operational-log exhaust (2026-08-26, ported from galadriel private harness):
+# NOT curated memory — raw per-turn telemetry (tool-cascade traces, full
+# cached-prefix dumps, the append-only conversation journal). mempalace
+# mines by extension (.jsonl is READABLE); without these excludes a
+# full-repo mine sweeps them in as if each line were a hand-filed drawer.
+# Found on the private box 2026-08-26: 181,212 of 206,387 drawers (~88%)
+# were exactly this. The journal has its own dedicated lexical-fallback
+# recall path — it does not need, and must never get, vector embedding.
+memory/prompt_trace/
+memory/cascades/
+memory/fresh_narrative_shadow/
+memory/journal/
 !memory/.gitkeep
 *.log
 .venv/
