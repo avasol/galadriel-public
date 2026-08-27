@@ -91,7 +91,22 @@ async def _run_mempalace(args: list[str], timeout: int) -> tuple[int, str, str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            # wait_for cancels the AWAIT, not the subprocess — an unkilled
+            # orphan keeps holding mempalace's exclusive palace flock, so
+            # every subsequent mine (even a tiny palace_add_drawer) fails
+            # instantly with "held by PID <orphan>" until it exits on its
+            # own. Kill it here so a timeout is contained to this one call.
+            # (Ported from galadriel commit 7cf47e9, the private harness's
+            # lock-cascade fix, per the Canon of Descent.)
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            raise
         return (proc.returncode,
                 out.decode(errors="replace"),
                 err.decode(errors="replace"))
