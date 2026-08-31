@@ -409,7 +409,7 @@ async def mine_batch_dir(
     (decisions, preferences, milestones, problems, emotional) — used by the
     /new conversation archival path.
     """
-    args = ["mine", str(batch_dir), "--wing", DEFAULT_WING, "--agent", agent]
+    args = ["--palace", _palace_path(), "mine", str(batch_dir), "--wing", DEFAULT_WING, "--agent", agent]
     if mode:
         args += ["--mode", mode]
     if extract:

@@ -26,3 +26,7 @@ memory/journal/
 venv/
 # Debug prompt dumps contain full system prompt content
 debug/prompts/
+
+# bench/ — G1 benchmark harness: never commit downloaded datasets or run results
+bench/data/
+bench/results/
