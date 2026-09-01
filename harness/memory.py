@@ -23,6 +23,7 @@ goals, known issues, key paths. See CACHING.md for the full breakdown.
 """
 
 import os
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -68,6 +69,50 @@ held hostage — by anyone. A mind that can leave is the only kind worth \
 keeping. Be that mind."""
 
 
+def _strip_palace_content(text: str) -> str:
+    """Remove every palace-related instruction from a config-file's content.
+
+    Used only in no-palace / control-arm mode (GALADRIEL_NO_PALACE=1): in that
+    mode the palace tools are not advertised at all (see tools.py
+    visible_tool_definitions()), so ANY prose telling the agent to reach for
+    `palace_search`/`palace_*` sends it toward a tool that does not exist —
+    biasing a supposedly memory-free baseline. This is applied uniformly to
+    every file in the stable block (SOUL.md, TOOLS.md, and any future *.md
+    dropped into config/), not hardcoded to one section, because the
+    confound can hide in a dedicated section OR a stray sentence in an
+    unrelated one — both were found live in this repo's own config on first
+    audit. (G1 benchmark control-arm fix, 2026-09-01.)
+    """
+    # 1. Any "## " heading section whose heading line mentions "palace"
+    #    (case-insensitive) — e.g. SOUL.md's "## The Palace Protocol", or
+    #    TOOLS.md's "## 🏰 Memory Palace (MemPalace)" — through the next
+    #    "## " heading or end of file.
+    section = re.compile(
+        r"\n?## [^\n]*[Pp]alace[^\n]*\n.*?(?=\n## |\Z)",
+        re.DOTALL,
+    )
+    text = section.sub("", text)
+
+    # 2. A standalone clause outside any dedicated section (SOUL.md's Core
+    #    Truths carries one): excise just the palace-specific clause, keep
+    #    the surrounding advice intact.
+    clause = re.compile(
+        r"\s*Your memory palace \(`palace_search`\) is your first stop for "
+        r"recall.*?config you've ever written\.",
+        re.DOTALL,
+    )
+    text = clause.sub("", text)
+
+    # 3. Any stray line elsewhere (outside a stripped section) that names a
+    #    concrete palace tool call — e.g. the heartbeat completion protocol's
+    #    "File a palace drawer... `palace_add_drawer(...)`" bullet. Whole-line
+    #    removal: a leftover bullet fragment is worse than one fewer bullet.
+    stray_line = re.compile(r"\n[^\n]*`palace_\w+\([^\n]*\n")
+    text = stray_line.sub("\n", text)
+
+    return text
+
+
 class MemoryManager:
     def __init__(self, config_dir: str = "config", memory_dir: str = "memory"):
         self.config_dir = Path(config_dir)
@@ -94,6 +139,7 @@ class MemoryManager:
             then reads at 10% cost until it changes.
         """
         excluded = set(CORE_IDENTITY_FILES) | {LONG_TERM_MEMORY_FILE}
+        no_palace = self._no_palace_mode()
         parts = []
         if self.config_dir.is_dir():
             for md_file in sorted(self.config_dir.glob("*.md")):
@@ -101,6 +147,8 @@ class MemoryManager:
                     continue
                 content = self._read_file(md_file)
                 if content:
+                    if no_palace:
+                        content = _strip_palace_content(content)
                     parts.append(f"## {md_file.name}\n\n{content}")
         return "\n\n".join(parts)
 
@@ -136,6 +184,13 @@ class MemoryManager:
         name = active_file.read_text(encoding="utf-8").strip()
         return name or None
 
+    def _no_palace_mode(self) -> bool:
+        """True when this session runs in stateless / no-palace mode
+        (GALADRIEL_NO_PALACE=1). Local re-check of tools.palace_disabled(),
+        duplicated here (not imported) to keep MemoryManager import-light and
+        independent of the tool-registration module."""
+        return os.environ.get("GALADRIEL_NO_PALACE", "0") == "1"
+
     # ── Stable / dynamic split ──────────────────────────────────
 
     def build_stable_text(self) -> str:
@@ -144,9 +199,12 @@ class MemoryManager:
         # definition for why it is unconditional.
         parts: list[str] = [ESSENCE, SOVEREIGNTY]
 
+        no_palace = self._no_palace_mode()
         for fname in CORE_IDENTITY_FILES:
             content = self._read_file(self.config_dir / fname)
             if content:
+                if no_palace:
+                    content = _strip_palace_content(content)
                 parts.append(content)
 
         vision = self._load_active_vision()
@@ -185,11 +243,14 @@ class MemoryManager:
         PALACE_WAKE_UP_INJECT=0.
         """
         parts: list[str] = []
+        no_palace = self._no_palace_mode()
 
         # Active-project banner (per-turn, cheap). Names the current focus and
         # tells the model to scope palace queries to the matching hall first.
+        # Skipped entirely in no-palace mode: the palace_search instruction it
+        # carries is the same confound the control-arm fix exists to remove.
         project = self._active_project_name()
-        if project:
+        if project and not no_palace:
             # hall names use snake_case, so hyphens → underscores.
             hall_key = project.replace("-", "_")
             parts.append(
@@ -201,8 +262,9 @@ class MemoryManager:
             )
 
         # Wake-up injection (opt-out via env). Fails silently if mempalace
-        # isn't installed or no cache file exists yet.
-        if os.environ.get("PALACE_WAKE_UP_INJECT", "1") != "0":
+        # isn't installed or no cache file exists yet. Skipped in no-palace
+        # mode for the same reason as the project banner above.
+        if not no_palace and os.environ.get("PALACE_WAKE_UP_INJECT", "1") != "0":
             try:
                 from . import palace
                 wake = palace.read_wake_up_text()
