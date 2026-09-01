@@ -21,6 +21,15 @@ question is asked with zero prior context. This isolates what memory
 contributes and should score near-abstention for most fact-bearing questions
 — if it doesn't, something in the harness is leaking context and the result
 is not trustworthy.
+
+SANDBOX (`GALADRIEL_BENCH_SANDBOX=1`, both arms): filesystem/shell tools
+(run_shell/read_file/write_file) are removed from the tool set entirely —
+found live 2026-09-01 that a benchmark question can trigger the agent's own
+"be resourceful" instinct into `run_shell("grep -r <fact> /")`, and cwd-based
+`working_dir` does NOT contain an absolute-path command. A LongMemEval
+question has no legitimate need for real files, so the capability is
+removed rather than path-restricted (an absolute-path jail is easy to
+defeat and hard to verify airtight; removing the tool class is neither).
 """
 from __future__ import annotations
 
@@ -71,6 +80,14 @@ async def _run_one_item(item: ChatHistoryItem, *, memory_on: bool, model: str | 
         "MEMPALACE_PATH": palace_path,
         "PALACE_ARCHIVE_ROOT": archive_root,
         "GALADRIEL_NO_PALACE": "0" if memory_on else "1",
+        # Least-privilege for an untrusted eval question (found live
+        # 2026-09-01: the agent's own "be resourceful before asking"
+        # instinct led it to `run_shell("grep -r <fact> /")` scanning the
+        # box's real filesystem for a benchmark answer — cwd alone does not
+        # sandbox absolute paths). A LongMemEval question has no legitimate
+        # need for shell/file tools at all; remove the capability entirely
+        # for BOTH arms, not just the control arm.
+        "GALADRIEL_BENCH_SANDBOX": "1",
     }
     for k, v in overrides.items():
         env_backup[k] = os.environ.get(k)

@@ -3,6 +3,7 @@
 import asyncio
 import os
 import platform
+import signal
 import subprocess
 from pathlib import Path
 
@@ -421,13 +422,41 @@ def palace_disabled() -> bool:
     return os.environ.get("GALADRIEL_NO_PALACE", "0") == "1"
 
 
+# ── Bench sandbox mode (least-privilege for untrusted eval questions) ──
+# Set GALADRIEL_BENCH_SANDBOX=1 to run a LongMemEval-style benchmark item:
+# filesystem/shell tools are removed entirely, not merely path-restricted.
+#
+# Found live, 2026-09-01: a bench smoke run's "be resourceful before asking"
+# instinct led the agent to `run_shell("grep -ril '<fact from the question>' /")`
+# hunting the filesystem for benchmark answer text. `working_dir` only sets
+# the shell's cwd — it does NOT stop an absolute path from escaping the
+# sandbox — so this scanned the box's ENTIRE real filesystem (EBS mount,
+# Plex media, other repos) for several minutes before being killed by hand.
+# A benchmark question has no legitimate reason to touch real files at all
+# (LongMemEval tests conversational recall, not file lookup): the correct
+# fix is removing the capability class, not trying to make an absolute-path
+# jail watertight (symlinks, `..`, env expansion all defeat that cheaply).
+_BENCH_UNSAFE_TOOL_NAMES = frozenset({"run_shell", "read_file", "write_file"})
+
+
+def bench_sandboxed() -> bool:
+    """True when this session runs inside the benchmark harness's sandbox."""
+    return os.environ.get("GALADRIEL_BENCH_SANDBOX", "0") == "1"
+
+
 def visible_tool_definitions() -> list:
     """Tool defs filtered for the current session mode. In no-palace mode the
     palace tools are not advertised at all, so the agent cannot reach for memory
-    it has been told to forget."""
+    it has been told to forget. In bench-sandbox mode, filesystem/shell tools
+    are removed entirely — a benchmark question has no legitimate reason to
+    touch real files, and cwd-based restriction does not actually contain
+    absolute-path commands (see _BENCH_UNSAFE_TOOL_NAMES above)."""
+    defs = TOOL_DEFINITIONS
     if palace_disabled():
-        return [t for t in TOOL_DEFINITIONS if t["name"] not in _PALACE_TOOL_NAMES]
-    return list(TOOL_DEFINITIONS)
+        defs = [t for t in defs if t["name"] not in _PALACE_TOOL_NAMES]
+    if bench_sandboxed():
+        defs = [t for t in defs if t["name"] not in _BENCH_UNSAFE_TOOL_NAMES]
+    return list(defs)
 
 
 async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir: str = None) -> str:
@@ -435,6 +464,12 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
     # Stateless mode: refuse palace calls clearly.
     if palace_disabled() and name in _PALACE_TOOL_NAMES:
         return "[stateless session] palace memory is disabled (--no-palace); this tool is unavailable."
+    # Bench-sandbox mode: refuse filesystem/shell calls clearly, even if one
+    # somehow got requested despite not being advertised (e.g. replayed from
+    # a cached tool list). Belt-and-braces on top of visible_tool_definitions().
+    if bench_sandboxed() and name in _BENCH_UNSAFE_TOOL_NAMES:
+        return ("[bench sandbox] filesystem/shell access is disabled during benchmark "
+                "evaluation; this tool is unavailable.")
     if name == "run_shell":
         return await _run_shell(inputs["command"], inputs.get("working_dir", working_dir))
     elif name == "toolshed":
@@ -593,16 +628,27 @@ async def _run_shell(command: str, working_dir: str = None) -> str:
         except Exception as e:
             return f"[error] {e}"
     try:
+        # start_new_session=True puts the shell in its own process group, so
+        # a timeout can kill the WHOLE group (shell + anything it forked),
+        # not just the /bin/sh wrapper. Found live 2026-09-01: a benchmark
+        # run's `grep -r /` kept running for 10+ minutes after its 120s
+        # timeout fired, because proc.kill() only killed the shell — the
+        # already-forked grep was reparented to init and kept scanning the
+        # box's real filesystem, unkillable via the handle we held.
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            start_new_session=True,
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         except asyncio.TimeoutError:
-            proc.kill()
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # process (and group) already gone
             await proc.wait()
             return "[error] Command timed out after 120 seconds."
 
