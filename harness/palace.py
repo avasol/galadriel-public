@@ -27,6 +27,7 @@ Environment overrides:
 import asyncio
 import logging
 import random
+import re
 import os
 import sys
 from datetime import datetime
@@ -432,6 +433,53 @@ async def mine_batch_dir(
     return False
 
 
+_B64_RUN = re.compile(r"[A-Za-z0-9+/=]{300,}")
+
+
+def is_binary_noise(text: str) -> bool:
+    """True if *text* is a bare base64/binary payload rather than words.
+
+    Image blocks that get str()'d into the archive are chunked and embedded
+    into thousands of meaningless drawers. "Verbatim" is scoped to WORDS; a
+    payload is never a memory. Used by random_drawer() so a dream is never
+    seeded by pixels, and by the serializer tests.
+    """
+    s = (text or "").replace("\n", "").strip()
+    return len(s) > 300 and re.fullmatch(r"[A-Za-z0-9+/=]+", s[:1000]) is not None
+
+
+def _image_placeholder(block: dict) -> str:
+    src = block.get("source") or {}
+    media = src.get("media_type") or "image"
+    data = src.get("data") or ""
+    kb = len(data) // 1024 if isinstance(data, str) else 0
+    return f"[image omitted — {media}, {kb} KB]"
+
+
+def _render_result_content(content) -> str:
+    """Render a tool_result's content for the archive: text verbatim, images
+    as a placeholder, anything else str()'d and capped. Never a payload."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out = []
+        for b in content:
+            if not isinstance(b, dict):
+                out.append(str(b)[:4000])
+                continue
+            bt = b.get("type")
+            if bt == "text":
+                out.append(b.get("text", ""))
+            elif bt == "image":
+                out.append(_image_placeholder(b))
+            else:
+                out.append(_B64_RUN.sub("[binary omitted]", str(b))[:4000])
+        return "\n".join(out)
+    return _B64_RUN.sub("[binary omitted]", str(content))[:4000]
+
+
 def _serialize_message(msg: dict) -> str:
     """Render a single API-format message as a markdown section."""
     role = msg.get("role", "?")
@@ -456,12 +504,12 @@ def _serialize_message(msg: dict) -> str:
             elif btype == "tool_result":
                 parts.append(
                     f"### tool_result (id={block.get('tool_use_id', '?')})\n\n"
-                    f"{block.get('content', '')}"
+                    f"{_render_result_content(block.get('content', ''))}"
                 )
             elif btype in ("thinking", "redacted_thinking"):
                 parts.append("[thinking — omitted]")
             elif btype == "image":
-                parts.append("[image block — omitted]")
+                parts.append(_image_placeholder(block))
             else:
                 parts.append(f"[{btype} block]\n\n{block}")
     else:
@@ -709,9 +757,15 @@ def random_drawer(max_chars: int = 600) -> dict | None:
         ]
         if not active:
             return None
-        did, dmeta = random.choice(active)
-        doc = col.get(ids=[did], include=["documents"])
-        text = ((doc.get("documents") or [""])[0] or "").strip()
+        text = ""
+        for _ in range(12):
+            did, dmeta = random.choice(active)
+            doc = col.get(ids=[did], include=["documents"])
+            text = ((doc.get("documents") or [""])[0] or "").strip()
+            if not is_binary_noise(text):
+                break  # a payload is not a memory; never seed a dream with pixels
+        else:
+            return None
         return {
             "topic": dmeta.get("topic") or dmeta.get("hall") or "?",
             "room": dmeta.get("room", "?"),
