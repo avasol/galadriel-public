@@ -422,34 +422,145 @@ class GeminiProvider:
         # (fast, cheap — the default here), -1 lets the model decide.
         self.thinking_budget = int(os.environ.get("GEMINI_THINKING_BUDGET", "0"))
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+        # Adaptive, not hardcoded: some 2.5-class models (found live 2026-08-27
+        # testing the cross-provider /supreme pick — gemini-2.5-pro) REJECT
+        # budget 0 ("this model only works in thinking mode"); others (flash)
+        # require it be disableable for cheap fast calls. Rather than hand-list
+        # which models mandate thinking, learn it the same way agent.py's
+        # Anthropic path already learns per-model thinking dialects: the API
+        # corrects us once via its own error, we remember for next time.
+        self._requires_thinking: set[str] = set()
+        
+        # Stateful explicit cache mapping (hash -> Google cachedContent name)
+        self._cache_map: dict[str, str] = {}
+        self._last_cache_write = False
 
-    async def complete(self, *, model, max_tokens, system, tools, messages):
-        # `model` is the Anthropic model id from the agent; Gemini ignores it and
-        # uses its own. The mind doesn't care which brain answers.
-        gem_model = self.default_model
-        gen_cfg = {"maxOutputTokens": max_tokens}
-        # Only 2.5 models accept thinkingConfig; harmless to send, but gate to
-        # avoid surprising older models. Budget 0 = no hidden reasoning spend.
-        if "2.5" in gem_model:
-            gen_cfg["thinkingConfig"] = {"thinkingBudget": self.thinking_budget}
-        body = {
-            "contents": _anthropic_messages_to_gemini(messages),
-            "generationConfig": gen_cfg,
-        }
-        sys_text = _anthropic_system_to_text(system)
-        if sys_text:
-            body["systemInstruction"] = {"parts": [{"text": sys_text}]}
-        gem_tools = _anthropic_tools_to_gemini(tools)
-        if gem_tools:
-            body["tools"] = gem_tools
-
+    async def _post(self, gem_model: str, body: dict) -> "httpx.Response":
         url = f"{_GEMINI_API_BASE}/models/{gem_model}:generateContent"
-        r = await self._client.post(
+        return await self._client.post(
             url, json=body, headers={"x-goog-api-key": self.api_key},
         )
+
+    async def _get_or_create_cache(self, gem_model: str, stable_text: str, gem_tools: list | None) -> str | None:
+        if not stable_text or len(stable_text) < 4000:
+            return None
+            
+        import hashlib
+        import json
+        raw = stable_text + (json.dumps(gem_tools, sort_keys=True) if gem_tools else "")
+        h = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        
+        if h in self._cache_map:
+            return self._cache_map[h]
+            
+        url = f"{_GEMINI_API_BASE}/cachedContents"
+        payload = {
+            "model": f"models/{gem_model}",
+            "systemInstruction": {"parts": [{"text": stable_text}]},
+            "ttl": "3600s",
+        }
+        if gem_tools:
+            payload["tools"] = gem_tools
+            
+        r = await self._client.post(
+            url, json=payload, headers={"x-goog-api-key": self.api_key},
+            timeout=30.0
+        )
+        if r.status_code == 200:
+            name = r.json()["name"]
+            self._cache_map[h] = name
+            self._last_cache_write = True
+            log.info(f"Gemini cached context created: {name} for {gem_model}")
+            return name
+        elif r.status_code == 400 and "too small" in r.text.lower():
+            return None
+        else:
+            log.warning(f"Gemini cache creation failed {r.status_code}: {r.text[:200]}")
+            return None
+
+    async def complete(self, *, model, max_tokens, system, tools, messages,
+                       thinking=None):
+        # `thinking` is accepted but not translated in v1 — no false parity.
+        # `model` is normally the Anthropic model id from the agent's own
+        # session config — Gemini ignores that and uses its configured
+        # default, since the mind doesn't care which brain answers. But a
+        # caller that DOES know it wants a specific Gemini model (Palantír's
+        # cross-provider /supreme pick, 2026-08-27) passes a real Gemini id
+        # here — honour it rather than silently substituting the default.
+        gem_model = model if model and "gemini" in model.lower() else self.default_model
+        gen_cfg = {"maxOutputTokens": max_tokens}
+        # Only 2.5 models accept thinkingConfig; harmless to send, but gate to
+        # avoid surprising older models. Budget 0 = no hidden reasoning spend,
+        # UNLESS this model has already told us it mandates thinking — then
+        # omit thinkingConfig entirely and let Gemini use its own default.
+        if "2.5" in gem_model and gem_model not in self._requires_thinking:
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": self.thinking_budget}
+            
+        gem_tools = _anthropic_tools_to_gemini(tools)
+        
+        stable_text = ""
+        dynamic_text = ""
+        if isinstance(system, list):
+            for b in system:
+                if b.get("cache_control"):
+                    stable_text += b.get("text", "") + "\n\n"
+                else:
+                    dynamic_text += b.get("text", "") + "\n\n"
+            stable_text = stable_text.strip()
+            dynamic_text = dynamic_text.strip()
+        else:
+            dynamic_text = _anthropic_system_to_text(system)
+            
+        cache_name = await self._get_or_create_cache(gem_model, stable_text, gem_tools) if stable_text else None
+        
+        gem_messages = _anthropic_messages_to_gemini(messages)
+        if dynamic_text:
+            injection = f"--- SYSTEM CONTEXT (DYNAMIC) ---\n{dynamic_text}\n\n"
+            if gem_messages and gem_messages[0]["role"] == "user":
+                gem_messages[0]["parts"].insert(0, {"text": injection})
+            else:
+                gem_messages.insert(0, {"role": "user", "parts": [{"text": injection}]})
+                
+        body = {
+            "contents": gem_messages,
+            "generationConfig": gen_cfg,
+        }
+        
+        if cache_name:
+            body["cachedContent"] = cache_name
+        else:
+            full_sys = (stable_text + "\n\n" + dynamic_text).strip() if stable_text else dynamic_text
+            if full_sys:
+                body["systemInstruction"] = {"parts": [{"text": full_sys}]}
+            if gem_tools:
+                body["tools"] = gem_tools
+
+        r = await self._post(gem_model, body)
+        
+        # Auto-heal cache misses (TTL expired on Google's side)
+        if r.status_code in (400, 404) and "cache" in r.text.lower() and cache_name:
+            log.warning(f"Gemini cached content {cache_name} invalid, retrying without cache.")
+            for k, v in list(self._cache_map.items()):
+                if v == cache_name:
+                    del self._cache_map[k]
+            body.pop("cachedContent", None)
+            if stable_text:
+                body["systemInstruction"] = {"parts": [{"text": stable_text}]}
+            if gem_tools:
+                body["tools"] = gem_tools
+            r = await self._post(gem_model, body)
+
+        if r.status_code == 400 and "thinking mode" in r.text.lower() and "thinkingConfig" in body.get("generationConfig", {}):
+            # Learn it and retry once, this call, without forcing a budget.
+            self._requires_thinking.add(gem_model)
+            body["generationConfig"].pop("thinkingConfig", None)
+            log.info(f"Gemini model {gem_model} mandates thinking — retrying without a forced budget.")
+            r = await self._post(gem_model, body)
+            
         if r.status_code != 200:
             detail = r.text[:200]
             raise RuntimeError(f"Gemini HTTP {r.status_code}: {detail}")
+            
         data = r.json()
 
         cands = data.get("candidates") or []
@@ -458,6 +569,8 @@ class GeminiProvider:
         if cands:
             cand = cands[0]
             for part in cand.get("content", {}).get("parts", []):
+                if part.get("thought"):
+                    continue  # Gemini's own reasoning summary — not an answer block
                 if "text" in part and part["text"]:
                     out_blocks.append(_NovaBlock(text=part["text"]))
                 elif "functionCall" in part:
@@ -466,6 +579,7 @@ class GeminiProvider:
                         "id": f"gem_{fc.get('name','tool')}_{len(out_blocks)}",
                         "name": fc.get("name"),
                         "input": fc.get("args", {}) or {},
+                        "thought_signature": part.get("thoughtSignature"),
                     }))
         if not out_blocks:
             out_blocks = [_NovaBlock(text="")]
@@ -474,16 +588,29 @@ class GeminiProvider:
             finish = "tool_use"
 
         um = data.get("usageMetadata", {})
-        return _NovaResponse(
+        
+        cache_read = um.get("cachedContentTokenCount", 0)
+        cache_write = 0
+        if self._last_cache_write and cache_read > 0:
+            cache_write = cache_read
+            self._last_cache_write = False
+            
+        # thoughtsTokenCount is billed as OUTPUT by Google but reported apart
+        # from candidatesTokenCount — fold it in or the ledger undercounts
+        # every thinking model (Gemini 3.x thinks by default).
+        resp = _NovaResponse(
             out_blocks, finish,
             um.get("promptTokenCount", 0),
-            um.get("candidatesTokenCount", 0),
+            (um.get("candidatesTokenCount", 0) or 0) + (um.get("thoughtsTokenCount", 0) or 0),
         )
+        resp.usage.cache_read_input_tokens = cache_read
+        resp.usage.cache_creation_input_tokens = cache_write
+        return resp
 
     def usage(self, raw) -> Usage:
         u = raw.usage
-        return {"input": u.input_tokens, "cache_read": 0,
-                "cache_write": 0, "output": u.output_tokens}
+        return {"input": u.input_tokens, "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
+                "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0, "output": u.output_tokens}
 
 
 _REGISTRY = {
