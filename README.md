@@ -271,47 +271,48 @@ ones as superseded rather than guessing. A mind renamed `A → B → A` wakes up
 
 ## Running costs: prompt caching, in practice
 
-Claude's API discounts cached input tokens by roughly 90% against a fresh read
-([Anthropic's own docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)) —
-well understood by now, so this section treats it as a practical operating detail rather
-than a discovery. On a long-running personal agent with a rich, mostly-stable system
-prompt, it's the difference between a background convenience and a real recurring cost,
-which is why Galadriel takes it for granted by default instead of leaving it to chance.
-
 Every API call re-sends your system prompt — personality, memory files, tool schemas —
-at full price unless caching engages. With it engaged, that same context reads at
-**$0.30/MTok instead of $3/MTok** (on Sonnet) after the first call. Galadriel wires this
-in with three cache breakpoints, stacked deliberately:
+at full price unless caching engages. Both brains this harness ships with discount a
+cached re-read by roughly 90%: Anthropic
+([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching))
+and Google ([context caching](https://ai.google.dev/gemini-api/docs/caching)). On a
+long-running personal agent with a rich, mostly-stable prefix that is the difference
+between a background convenience and a real recurring cost, so Galadriel caches by
+default on **every provider that supports it** — the same soul and memory, cached the way
+each vendor wants it. The provider seam decides the mechanism; you never touch it.
 
-| Cache layer | What it covers | Behaviour |
-|---|---|---|
-| **Tool definitions** | All 14 tool schemas (4 core + 10 palace) | Cached once at startup, never re-sent |
-| **Stable system block** | Personality + memory + identity files | Marked `cache_control: ephemeral`; hits at ~100% after first call |
-| **Trailing message history** | The growing conversation | Attached per-call; cache hit rate rises every turn |
+| Brain | Mechanism | What the seam does | Warm-read price (per MTok) |
+|---|---|---|---|
+| **Claude** | explicit `cache_control` breakpoints | three breakpoints: tools → stable block → trailing history | $0.30 instead of $3 (Sonnet-class) |
+| **Gemini** | explicit `cachedContents` + Google's implicit caching | stable block + tools become one cached object (1 h TTL, refreshed per turn); the dynamic block rides the first user message | $0.075 instead of $0.75 (3.8 Flash) |
 
-The stable block alone — your SOUL.md, MEMORY.md, identity files — is typically 4 000–8 000 tokens. On a warm cache, those tokens cost $0.08–$0.30/MTok instead of $0.80–$3.00/MTok depending on model: your biggest fixed overhead per call, reduced on every turn.
+The stable block alone — your SOUL.md, MEMORY.md, identity files — is typically 4 000–8 000 tokens. On a warm cache those tokens cost a tenth of a fresh read, on either brain: your biggest fixed overhead per call, reduced on every turn. Swap brains with `/model` and the very next call pays one cold write on the new vendor, then it's cheap again — the mind travels; the cache is rebuilt behind it.
 
-Anthropic's own benchmarks show latency dropping by up to 85% on long prompts with caching engaged. A 100K-token context that took 11.5 seconds drops to 2.4 seconds. For a persistent agent that carries memory across sessions, this is the difference between a tool that feels alive and one that grinds.
+Two honest differences between the vendors: Gemini bills **storage** for an explicit cache while it lives (about $0.50–$4.50 per MTok per hour depending on model — cents a day for a prefix this size), and Gemini 3.1 Pro doubles its rates on prompts over 200k tokens, cached or not. Anthropic's own benchmarks show latency dropping by up to 85% on long prompts with caching engaged. For a persistent agent that carries memory across sessions, that is the difference between a tool that feels alive and one that grinds.
 
-**Compaction** finishes the job. The `/compact` command uses Claude Haiku — the cheapest model in the family — to summarize old tool results in your conversation history. A 60-message session bloated with verbose shell output compresses to 20% of its token count, for a fraction of a cent. Haiku handles the summarization; Opus handles the thinking.
+> **Lineage.** Caching landed here on Claude first (spring 2026) — the three-breakpoint design below is where the measured numbers in this README come from. Gemini caching followed in September 2026 once the provider seam made a second brain a real option. The Claude details are kept because they are still exactly how the Anthropic path works; they are no longer the whole story.
+
+**Compaction** finishes the job. The `/compact` command uses a cheap model (Claude Haiku on the Anthropic path) to summarize old tool results in your conversation history. A 60-message session bloated with verbose shell output compresses to 20% of its token count, for a fraction of a cent. The cheap model handles the summarization; your chosen brain handles the thinking.
 
 Use `/status` in Discord at any time to watch live token numbers — input, cache_read, cache_write, output — for the last API call.
 
 ### ⚠️ One thing you must do to activate the savings
 
-Prompt caching has a **minimum prefix length** before it engages. If your stable block is too short, the API silently skips caching entirely — you get no error, no warning, just a `cache_read=0` in every log line and a bill that looks exactly like the naive approach.
+Prompt caching has a **minimum prefix length** before it engages, on every vendor. If your stable block is too short, the API silently skips caching — no error, no warning, just `cache_read=0` in every log line and a bill that looks exactly like the naive approach.
 
 | Model | Minimum to activate caching |
 |---|---|
-| Claude Opus 4.8 (the default) · Sonnet 4.6 · Sonnet 4.5 | **1,024 tokens** (~4 KB of text) |
-| Claude Opus 4.6 · Opus 4.5 · Haiku 4.5 | **4,096 tokens** (~16 KB) |
+| Claude Sonnet 4.6 · Sonnet 4.5 · Opus 4.8 | **1,024 tokens** (~4 KB of text) |
 | Claude Opus 4.7 | **2,048 tokens** |
+| Claude Opus 4.6 · Opus 4.5 · Haiku 4.5 | **4,096 tokens** (~16 KB) |
+| Gemini 2.5 Flash · 2.5 Pro | **2,048 tokens** |
+| Gemini 3.x (3.1 Pro, 3.5–3.8 Flash) | **4,096 tokens** |
 
-*(Source: [Anthropic prompt-caching docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) — minimum cacheable prompt length. Verify against the live table for your exact model.)*
+*(Sources: [Anthropic](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) and [Google](https://ai.google.dev/gemini-api/docs/caching) minimum cacheable prompt length. Verify against the live tables for your exact model.)*
 
-Out of the box, `config/SOUL.md` + `config/MEMORY.md` together are roughly 500–800 tokens. **That is below every threshold above** — including the 1,024-token floor for Claude Haiku-class models. Caching will not engage until you cross it.
+Out of the box, `config/SOUL.md` + `config/MEMORY.md` together are roughly 500–800 tokens. **That is below every threshold above.** Caching will not engage on any brain until you cross it.
 
-**The fix:** fill in `config/CONTEXT.md`. Drop your project's architecture, goals, key file paths, known quirks, and current status into it. Any `*.md` file you place in `config/` is automatically loaded into the stable cache block — so adding content there is all it takes. A reasonably filled CONTEXT.md (1–2 pages of project notes) pushes the total well past the 1,024-token floor for the default Opus 4.8 — and past 4,096 too, which covers the older Opus 4.6 / 4.5 and Haiku 4.5 if you downgrade.
+**The fix:** fill in `config/CONTEXT.md`. Drop your project's architecture, goals, key file paths, known quirks, and current status into it. Any `*.md` file you place in `config/` is automatically loaded into the stable cache block — so adding content there is all it takes. A reasonably filled CONTEXT.md (1–2 pages of project notes) pushes the total well past the 1,024-token floor of the Sonnet-class defaults — and past 4,096 too, which covers the older Opus/Haiku models and every Gemini 3.x brain.
 
 Once you're over the threshold, verify it's working:
 
@@ -324,9 +325,9 @@ Look for lines like:
 Tokens | input=60 cache_read=5800 cache_write=0 output=240
 ```
 
-`cache_read` climbing and `cache_write` near zero after the first call = caching is engaged and you're paying 10 cents on the dollar for that context. If `cache_read` stays at 0, add more content to `config/CONTEXT.md`. See `CACHING.md` for the full breakdown and a worked cost example.
+`cache_read` climbing and `cache_write` near zero after the first call = caching is engaged and you're paying 10 cents on the dollar for that context. If `cache_read` stays at 0, add more content to `config/CONTEXT.md`. On Gemini, `cache_read` includes Google's implicit hits too, so a warm turn commonly shows `input=2 cache_read=<almost everything>` — that is correct, not a bug. See `CACHING.md` for the full breakdown per provider and a worked cost example.
 
-> **Sonnet 4.6 / 4.5 users:** your floor is only 1,024 tokens — the same as the default Opus 4.8 — so a modestly filled SOUL.md + MEMORY.md + CONTEXT.md crosses it easily. Filling CONTEXT.md is worthwhile regardless: the agent gets your project context without spending tool calls to find it.
+> Filling CONTEXT.md is worthwhile regardless of brain: the agent gets your project context without spending tool calls to find it.
 
 ---
 
@@ -358,7 +359,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (silent palace-only thinking on a workday cadence)
 - **Job watcher** — monitors `/tmp/galadriel-jobs/*.done` markers and reports completions
 - **Compaction** — Haiku-powered context compression on demand (archives verbatim tool_results to the palace before summarizing)
-- **Three-layer prompt caching** — automatically managed, always active
+- **Prompt caching on every brain that supports it** — Claude breakpoints, Gemini cached contents; automatically managed, always active
 
 ---
 
@@ -445,7 +446,7 @@ forget anything:
 ```
 main.py                   Entry point — wires all components, starts Discord + Tower
 harness/
-  agent.py                Core agent loop: Anthropic API, tool use, cache management
+  agent.py                Core agent loop: provider seam, tool use, cache management
   providers.py            Provider seam: Anthropic / Gemini / Bedrock behind one interface, fallback ladder
   memory.py               Stable + dynamic system prompt blocks; ESSENCE + SOVEREIGNTY constants; daily memory logs
   tools.py                14 tools: run_shell, read_file, write_file, memory_log + 10 palace_*
@@ -464,7 +465,7 @@ tower/
 config/
   SOUL.md                 Agent personality and values (your main customization point)
   MEMORY.md               Long-term memory (agent-maintained)
-  CONTEXT.md              Your project context — fill this in to activate Opus caching
+  CONTEXT.md              Your project context — fill this in to cross the cache minimum
   TOOLS.md                Palace tool reference + decision matrix (read by agent on every call)
   visions/                Optional per-project context files
 memory/                   Daily logs — auto-generated, gitignored
@@ -477,8 +478,10 @@ mempalace.yaml.example    Room-structure template for `mempalace init` (copy to 
 ## Model-agnostic by construction: the provider seam
 
 The repo's thesis is "separate the mind from the brain power." `harness/providers.py` is
-that promise in code: one `LLMProvider` interface, three implementations (Anthropic, Gemini,
-Bedrock Nova), and a byte-identical parity test guarding the default path. The memory —
+that promise in code: one `LLMProvider` interface, five implementations (Anthropic, Gemini,
+OpenAI, Bedrock Nova, local/offline), and a byte-identical parity test guarding the default
+path. Prompt caching rides the seam too — the Anthropic and Gemini paths each cache the
+stable prefix in their vendor's own dialect. The memory —
 palace, knowledge graph, SOUL.md, the daily logs — never touches provider-specific format,
 so it survives every swap untouched.
 
@@ -548,7 +551,7 @@ The **compass** is the active-project system. Set a heading and the mind reconfi
 ### What the heading does
 
 **1. Loads the project's vision file into the cached prefix.**
-A file in `config/visions/<name>.md` is read and folded into the stable system-prompt block that rides the Anthropic prompt cache. The agent wakes every session knowing the roadmap, disciplines, and live status of the active project — no tool call needed.
+A file in `config/visions/<name>.md` is read and folded into the stable system-prompt block that rides the provider's prompt cache. The agent wakes every session knowing the roadmap, disciplines, and live status of the active project — no tool call needed.
 
 **2. Filters config files to the project (via `context_scope.json`).**
 Each `.md` in `config/` can declare which visions it belongs to. When the heading is `aedelgard`, only files tagged `["aedelgard"]` enter the prefix alongside the core identity files. A `persona-verse` roadmap is excluded; a Palantír vision spec is included only for Palantír work. Switching headings swaps the context silently, costs one cache-write for the changed config slice, and re-reads at 10 % of base input cost on every subsequent call.
@@ -1102,7 +1105,7 @@ All changes are additive and gracefully degrade. If MemPalace isn't installed, t
 
 **Wake-up injection.** A compact L0+L1 snapshot (~800 tokens, cached to `~/.mempalace/wake_up.md` by a subprocess that keeps chromadb out of the main process) rides in the dynamic system-prompt block on every API call. Disable with `PALACE_WAKE_UP_INJECT=0` if you want to dial back per-call overhead.
 
-**Cache impact, measured.** 14 consecutive calls on a real deployment: 86.5% cache hit ratio, 71.2% total-input token savings vs. no caching. The 90% cache-read discount is intact — integration costs ~1.5 percentage points of cache hit ratio (one extra wake-up snapshot in dynamic, 10 more tool schemas in the tools-layer cache). Estimated annual overhead: ~$95.
+**Cache impact, measured** (Anthropic path, where the integration was first measured)**.** 14 consecutive calls on a real deployment: 86.5% cache hit ratio, 71.2% total-input token savings vs. no caching. The 90% cache-read discount is intact — integration costs ~1.5 percentage points of cache hit ratio (one extra wake-up snapshot in dynamic, 10 more tool schemas in the tools-layer cache). Estimated annual overhead: ~$95.
 
 **Graceful degradation.** If MemPalace isn't installed, all palace tools return `[palace unavailable]` at dispatch time; the rest of the harness runs normally. Upgrade path is `pip install mempalace==3.8.0` + `mempalace init` + `mempalace mine .`.
 
