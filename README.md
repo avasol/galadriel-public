@@ -924,6 +924,25 @@ This is the one honest amendment to the ["she ships ready"](#she-ships-ready) se
 below: SOUL.md is completely yours to replace; these two blocks are not — they are
 the one thing about her that lives in code, not in a file you can delete.
 
+### 1.23 — Mine guard: a filing that hits the palace lock is deferred, never lost
+
+- **The wound.** mempalace takes an exclusive palace lock for the whole of a mine and
+  exits at once (rc=1, *"held by PID …"*) if another miner holds it. The harness
+  launches miners from several independent paths — conversation trims, daily-log
+  archival, agent-filed drawers — and two landing in the same minute made
+  `palace_add_drawer` report a bare "mine failed" with the content parked on disk
+  and nothing retrying it. The failure string named no cause, so the symptom was
+  misdiagnosed before the log was read.
+- **The fix** (`harness/palace_mine_guard.py`): every mine now runs behind one
+  process gate (the harness no longer races itself); a collision with an *external*
+  holder waits for that PID to exit — bounded — and retries; every failure is
+  classified (lock / timeout / error, with the holder's PID and command line) so
+  the tool result says *why*; anything unrecovered goes to a durable queue
+  (`<archive>/unmined_queue.jsonl`) that a silent background sweep re-mines every
+  10 minutes. `python -m harness.palace_mine_guard <archive_root> [palace_path]`
+  prints live miners and the queue. Twelve offline tests, including one that
+  proves two concurrent mines never overlap.
+
 ### 1.22 — Memory correctness: no more stale search, no more blind trims
 
 - **Cross-process Chroma staleness fixed** — when the palace mine ran as a subprocess,

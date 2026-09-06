@@ -39,6 +39,10 @@ DEFAULT_PALACE_PATH = str(Path.home() / ".mempalace" / "palace")
 DEFAULT_ARCHIVE_ROOT = str(Path.home() / ".mempalace" / "archive")
 DEFAULT_WAKE_UP_FILE = str(Path.home() / ".mempalace" / "wake_up.md")
 DEFAULT_WING = "agent"
+from . import palace_mine_guard as mine_guard
+
+# Last mine diagnosis (palace_mine_guard.MineDiagnosis) — for cause-bearing reports.
+LAST_MINE_DIAGNOSIS = None
 MINE_TIMEOUT_SEC = 90
 WAKE_UP_TIMEOUT_SEC = 30
 
@@ -406,31 +410,52 @@ async def mine_batch_dir(
     Failures log at WARNING but never raise. Also refreshes the wake-up
     cache on success so wake-up injection tracks the current palace state.
 
+    Guarded (see palace_mine_guard): the harness's own miners are serialised
+    behind one process gate; a collision with an external lock holder waits
+    for that holder to exit and retries; anything unrecovered is queued for
+    the background sweep, so a failed mine is deferred, never lost. The last
+    diagnosis is kept in LAST_MINE_DIAGNOSIS for callers that report causes.
+
     mode='convos' + extract='general' auto-classifies into 5 memory types
     (decisions, preferences, milestones, problems, emotional) — used by the
     /new conversation archival path.
     """
+    global LAST_MINE_DIAGNOSIS
     args = ["--palace", _palace_path(), "mine", str(batch_dir), "--wing", DEFAULT_WING, "--agent", agent]
     if mode:
         args += ["--mode", mode]
     if extract:
         args += ["--extract", extract]
-    try:
-        rc, _out, err = await _run_mempalace(args, timeout=MINE_TIMEOUT_SEC)
-        if rc == 0:
-            # Cross-process visibility: the miner wrote new embeddings; drop
-            # chromadb's in-process System cache so the NEXT in-process
-            # search actually sees them (see _refresh_chroma_view).
-            _refresh_chroma_view()
-            # Refresh the wake-up cache so the dynamic block picks up new drawers
-            asyncio.ensure_future(refresh_wake_up_cache())
-            return True
-        log.warning(f"Palace mine rc={rc} at {batch_dir}: {err[:500]}")
-    except asyncio.TimeoutError:
-        log.warning(f"Palace mine timed out after {MINE_TIMEOUT_SEC}s at {batch_dir}")
-    except Exception as e:
-        log.warning(f"Palace mine failed at {batch_dir}: {e}")
+
+    async def _once() -> tuple[int, str, str]:
+        return await _run_mempalace(args, timeout=MINE_TIMEOUT_SEC)
+
+    diag = await mine_guard.guarded_mine(_once, label=f"mine {Path(batch_dir).name}")
+    LAST_MINE_DIAGNOSIS = diag
+    if diag.kind == "ok":
+        # Cross-process visibility: the miner wrote new embeddings; drop
+        # chromadb's in-process System cache so the NEXT in-process
+        # search actually sees them (see _refresh_chroma_view).
+        _refresh_chroma_view()
+        # Refresh the wake-up cache so the dynamic block picks up new drawers
+        asyncio.ensure_future(refresh_wake_up_cache())
+        return True
+    depth = mine_guard.enqueue_failure(_archive_root(), Path(batch_dir), diag,
+                                       agent=agent, wing=DEFAULT_WING, mode=mode, extract=extract)
+    log.warning(f"Palace mine deferred ({diag.human()}) — queued for sweep, depth={depth}")
     return False
+
+
+async def _remine_queued(batch_dir: Path, agent: str, wing: str,
+                         mode: str | None, extract: str | None) -> bool:
+    """Sweeper callback: re-run a queued mine through the same guarded path."""
+    return await mine_batch_dir(batch_dir, agent=agent or "agent-add", mode=mode, extract=extract)
+
+
+def start_unmined_sweeper() -> "asyncio.Task":
+    """Start the background loop that re-mines deferred batches. Call once
+    from the scheduler after the event loop is running."""
+    return mine_guard.start_sweeper(_archive_root(), _remine_queued)
 
 
 _B64_RUN = re.compile(r"[A-Za-z0-9+/=]{300,}")
@@ -688,7 +713,10 @@ async def add_drawer(
 
     ok = await mine_batch_dir(batch_dir, agent="agent-add")
     if not ok:
-        return f"[palace add] mine failed — content still on disk at {batch_dir}"
+        cause = LAST_MINE_DIAGNOSIS.human() if LAST_MINE_DIAGNOSIS else "unknown"
+        depth = len(mine_guard.load_queue(_archive_root()))
+        return (f"[palace add] mine deferred — {cause}. Content is safe at {batch_dir} "
+                f"and queued for automatic retry (queue depth {depth}); it is not yet searchable.")
     # Verify by substance: exit codes lie — confirm the drawer is actually
     # visible to THIS process before claiming immediate recall.
     global _LAST_FILED_SOURCE

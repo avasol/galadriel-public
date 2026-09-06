@@ -305,6 +305,15 @@ class Scheduler:
             self._wake_task = asyncio.ensure_future(self._wake_loop())
             log.info("One-shot wake pending from saved state — will fire shortly.")
 
+        # Unmined sweeper: re-mines palace batches whose mine was deferred by a
+        # lock collision or timeout (palace_mine_guard). Silent, no model calls.
+        try:
+            from . import palace as _palace
+            self._unmined_sweeper_task = _palace.start_unmined_sweeper()
+            log.info("Unmined sweeper started (deferred palace mines retry in background)")
+        except Exception as e:
+            log.warning(f"Unmined sweeper could not be started: {e}")
+
         log.info("Scheduler running.")
 
     # ── One-shot Wake Loop ───────────────────────────────────────
