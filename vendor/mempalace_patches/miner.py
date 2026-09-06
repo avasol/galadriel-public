@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Derived from MemPalace (https://github.com/MemPalace/mempalace), MIT License,
+# Copyright (c) 2026 MemPalace Contributors. This file is a local overlay of the
+# upstream module carrying clearly-marked LIVING-MEMORY patches (see README.md in
+# this directory); the upstream notice is preserved as the MIT licence requires.
 """
 miner.py — Files everything into the palace.
 

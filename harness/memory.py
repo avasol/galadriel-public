@@ -32,6 +32,7 @@ CORE_IDENTITY_FILES = ("SOUL.md",)
 LONG_TERM_MEMORY_FILE = "MEMORY.md"
 VISIONS_DIR = "visions"
 ACTIVE_VISION_FILE = "active_vision.txt"
+CONTEXT_SCOPE_FILE = "context_scope.json"
 
 
 # THE ESSENCE — the one Aedelgard constant. Present at the top of every
@@ -140,17 +141,47 @@ class MemoryManager:
         """
         excluded = set(CORE_IDENTITY_FILES) | {LONG_TERM_MEMORY_FILE}
         no_palace = self._no_palace_mode()
+        scope = self._load_context_scope()
+        active = self._active_project_name()
         parts = []
         if self.config_dir.is_dir():
             for md_file in sorted(self.config_dir.glob("*.md")):
                 if md_file.name in excluded:
                     continue
+                if md_file.name in scope:
+                    # Compass scoping (see README "The compass", layer 2): a file
+                    # listed in context_scope.json enters the prefix only while
+                    # one of its visions is the active heading. Unlisted files
+                    # always load; an empty list means never (disk/palace only).
+                    allowed = scope[md_file.name]
+                    if not allowed or not (active and active in allowed):
+                        continue
                 content = self._read_file(md_file)
                 if content:
                     if no_palace:
                         content = _strip_palace_content(content)
                     parts.append(f"## {md_file.name}\n\n{content}")
         return "\n\n".join(parts)
+
+    def _load_context_scope(self) -> dict:
+        """Read config/context_scope.json — the per-heading scoping manifest.
+
+        Shape: {"ROADMAP_x.md": ["x"], "NOTES.md": ["x", "y"], "ARCHIVE.md": []}.
+        Returns {filename: [vision, ...]}. Missing or invalid file → {} (every
+        extra .md loads — the pre-manifest behaviour). Keys starting with '_'
+        are comments and ignored.
+        """
+        path = self.config_dir / CONTEXT_SCOPE_FILE
+        raw = self._read_file(path)
+        if not raw:
+            return {}
+        try:
+            import json
+            data = json.loads(raw)
+            return {k: v for k, v in data.items()
+                    if not k.startswith("_") and isinstance(v, list)}
+        except Exception:
+            return {}
 
     def _load_active_vision(self) -> str | None:
         """Load the currently active VISION (project focus).

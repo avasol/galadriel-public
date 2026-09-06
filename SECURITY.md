@@ -48,10 +48,15 @@ AWS) — report those to the processor.
 We state this plainly on [aedelgard.com/architecture](https://aedelgard.com/architecture)
 and repeat it here because it is the truth your threat model should assume:
 
-- **The local body** is **operator-blind by construction.** Plaintext and prompts
-  never leave the user's machine; the cloud can back it up and relay it, but only
-  ever as ciphertext sealed by a key derived from the user's own Aedelgard key.
-  We cannot read it — not as policy, but as physics.
+- **The local body** is **operator-blind by construction** — *Aedelgard* cannot
+  read it. Memory lives on the user's disk; the cloud can back it up and relay it,
+  but only ever as ciphertext sealed by a key derived from the user's own Aedelgard
+  key. Prompts, however, go wherever the *thinking* happens: with your own
+  provider key (Anthropic, Google, OpenAI) every turn's full prompt is sent to
+  that vendor under their terms — we are not in that path, but they are. Only
+  with a **local model** does plaintext never leave the machine at all. The
+  "not as policy, but as physics" claim is true of *our* blindness in every body
+  mode, and of *everyone's* blindness only in local-model mode.
 - **The hosted cloud broker** is **operator-blind at rest, but not in-flight.**
   Memory and model keys are envelope-encrypted at rest and per-tenant isolated,
   but during a request the broker decrypts what it needs *in memory* to run

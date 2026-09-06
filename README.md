@@ -35,8 +35,13 @@ same trust they would grant themselves:
 - `run_shell` is deliberately unrestricted — the operator IS the user.
 - The Tower UI ships without authentication and binds to localhost for
   exactly that reason.
-- Self-modification is a feature here, because the operator reviews their
-  own agent's commits.
+- Self-modification is a feature here. Be precise about what "reviewed" means:
+  the write, commit and push paths carry **no pre-commit gate** — the agent's
+  edits land as unilateral machine action, and the operator reviews them
+  *after the fact*, with `git log` as the audit trail and `git revert` as the
+  veto. The only hard gates are on the red command tier (destructive shell),
+  which fails closed without a human decision. "Notify & proceed" (yellow)
+  means exactly that: you are told, and it has already happened.
 
 **The Aedelgard product carries a different, tighter posture.** The packaged
 body gates first-run behind explicit consent, its background reflection may
@@ -89,7 +94,7 @@ The pieces that make this real, all already shipped:
 
 *Build it and they will come* is a poor engineering plan, so here is the honest version:
 the loop is **early**. She can already remember, restart herself, reflect silently, and
-edit her own harness under a human's eye. The trajectory — from human-approved self-edits
+edit her own harness with a human reading the commits afterwards. The trajectory — from post-hoc-reviewed self-edits
 toward genuinely autonomous, salience-driven self-improvement — is mapped in the
 [Scheduler](#scheduler) and [Release Notes](#release-notes) sections. This README tells
 you exactly where reality ends and ambition begins.
