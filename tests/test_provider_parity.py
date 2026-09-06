@@ -97,9 +97,10 @@ def test_cache_control_markers_preserved():
     assert kwargs["messages"][-1]["content"][-1].get("cache_control") == {"type": "ephemeral"}
 
 
-def test_make_provider_defaults_to_anthropic():
+def test_make_provider_defaults_to_anthropic(monkeypatch):
     """Selection must default to anthropic so the live hot path is unchanged
     unless AGENT_PROVIDER is explicitly set."""
+    monkeypatch.delenv("AGENT_PROVIDER", raising=False)  # a test of the DEFAULT must not inherit the runner's env
     client, _ = _make_mock_client()
     provider = make_provider(provider_name=None, anthropic_client=client)
     assert isinstance(provider, AnthropicProvider)

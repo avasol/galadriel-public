@@ -691,7 +691,9 @@ async def add_drawer(
         return f"[palace add] mine failed — content still on disk at {batch_dir}"
     # Verify by substance: exit codes lie — confirm the drawer is actually
     # visible to THIS process before claiming immediate recall.
-    visible = _drawer_visible(str(target_dir / fname))
+    global _LAST_FILED_SOURCE
+    _LAST_FILED_SOURCE = str(target_dir / fname)
+    visible = _drawer_visible(_LAST_FILED_SOURCE)
     return (
         f"Filed to palace: wing=`{wing}`"
         + (f", room=`{room}`" if room else "")
@@ -701,6 +703,26 @@ async def add_drawer(
            " — ⚠ mined but NOT yet visible to in-process search; it will "
            "surface after the next restart. Do not rely on immediate recall.")
     )
+
+
+_LAST_FILED_SOURCE: str | None = None
+
+
+def drawer_id_for_source(source_file: str) -> str | None:
+    """Resolve a drawer's chroma id from the .md path the miner ingested.
+    Exact metadata match — deterministic, no embedding. This is how a
+    correction is back-linked to the record it replaces (and how a test can
+    name a drawer without guessing)."""
+    try:
+        col = _drawers_collection()
+        if col is None:
+            return None
+        res = col.get(where={"source_file": source_file}, limit=1)
+        ids = res.get("ids") or []
+        return ids[0] if ids else None
+    except Exception as e:
+        log.warning(f"drawer id lookup failed: {e}")
+        return None
 
 
 def _drawer_visible(source_file: str) -> bool:
@@ -871,9 +893,17 @@ async def supersede_drawer(
         content=new_content, topic=topic, wing=wing, room=room,
         origin="correction", confidence=1.0,
     )
+    # Back-link (the docstring promised this from the start; the code only
+    # stamped superseded_at until 2026-09-06 — found while answering a public
+    # question about what artifact distinguishes a revision from a retrieval).
+    new_id = drawer_id_for_source(_LAST_FILED_SOURCE) if _LAST_FILED_SOURCE else None
+    stamp = {"superseded_at": datetime.now().isoformat()}
+    if new_id:
+        stamp["superseded_by"] = new_id
+        _set_drawer_status(new_id, "active", {"supersedes": drawer_id})
     old_marked = f"drawer {drawer_id[:40]} could not be updated"
-    if _set_drawer_status(drawer_id, "superseded", {"superseded_at": datetime.now().isoformat()}):
-        old_marked = f"superseded old drawer {drawer_id[:40]}"
+    if _set_drawer_status(drawer_id, "superseded", stamp):
+        old_marked = f"superseded old drawer {drawer_id[:40]}" + (f" → {new_id[:40]}" if new_id else "")
     kg_note = ""
     if invalidate_kg and len(invalidate_kg) == 3:
         try:
