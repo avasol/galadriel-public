@@ -120,6 +120,29 @@ def classify_failure(rc: int, out: str, err: str) -> MineDiagnosis:
 
 
 def pid_alive(pid: int) -> bool:
+    """Liveness probe. NEVER os.kill(pid, 0) on Windows — there it is
+    TerminateProcess, not a probe; the body runs on Windows."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not h:
+                return False
+            try:
+                code = wintypes.DWORD()
+                if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return False
+                return code.value == STILL_ACTIVE
+            finally:
+                k32.CloseHandle(h)
+        except Exception:
+            return False
     try:
         os.kill(pid, 0)
         return True
