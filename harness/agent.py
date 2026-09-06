@@ -59,6 +59,18 @@ CONTEXT_WINDOW_OVERRIDES = {
     "claude-opus-5":       1_000_000,
     "claude-sonnet-4-6":   1_000_000,
     "claude-opus-4-6":     1_000_000,
+    "claude-fable-5-1":    1_000_000,
+    # Gemini: a Gemini brain used to fall through to the 200k default -> a
+    # false "context full" alarm and a premature history trim on a model
+    # that carries 1,048,576 input tokens (inputTokenLimit). Static floor
+    # only; live discovery below overrides it.
+    "gemini-3.1-pro-preview": 1_048_576,
+    "gemini-3.8-flash":       1_048_576,
+    "gemini-3.5-flash-lite":  1_048_576,
+    "gemini-2.5-pro":         1_048_576,
+    "gemini-2.5-flash":       1_048_576,
+    "gemini-flash-latest":    1_048_576,
+    "gemini-pro-latest":      1_048_576,
 }
 
 # Populated at first agent init from client.models.list(). Falls back to
@@ -69,23 +81,43 @@ _DISCOVERY_DONE = False
 
 
 def _run_model_discovery(api_key: str) -> None:
-    """Query Anthropic's model list and cache max_input_tokens per model id.
-    Called once at agent init. Silently skips on any error — fallback table covers."""
+    """Discover context windows per model id, once at agent init.
+
+    Provider-aware: the seam made the brain swappable, but a context window
+    known only for Claude means any other brain silently inherits the 200k
+    default. Sources, each optional and swallowed on failure:
+      1. Anthropic  models.list() -> max_input_tokens   (if a Claude key is set)
+      2. Gemini     /v1beta/models -> inputTokenLimit   (if a Gemini key is set)
+    Whatever is left falls to CONTEXT_WINDOW_OVERRIDES / the default."""
     global _DISCOVERED_CONTEXT_WINDOWS, _DISCOVERY_DONE
     if _DISCOVERY_DONE:
         return
     try:
-        import anthropic as _ant
-        client = _ant.Anthropic(api_key=api_key)
-        for m in client.models.list().data:
-            ctx = getattr(m, "max_input_tokens", None)
-            if ctx and isinstance(ctx, int):
-                _DISCOVERED_CONTEXT_WINDOWS[m.id] = ctx
-        log.info(f"Model discovery: {len(_DISCOVERED_CONTEXT_WINDOWS)} models loaded from API.")
+        if api_key:
+            import anthropic as _ant
+            client = _ant.Anthropic(api_key=api_key)
+            for m in client.models.list().data:
+                ctx = getattr(m, "max_input_tokens", None)
+                if ctx and isinstance(ctx, int):
+                    _DISCOVERED_CONTEXT_WINDOWS[m.id.lower()] = ctx
     except Exception as exc:
-        log.warning(f"Model discovery failed (using fallback table): {exc}")
-    finally:
-        _DISCOVERY_DONE = True
+        log.warning(f"Model discovery (anthropic) failed: {exc}")
+    try:
+        gkey = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if gkey:
+            import urllib.request as _ur
+            url = f"https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key={gkey}"
+            with _ur.urlopen(url, timeout=5) as r:
+                for m in json.loads(r.read().decode()).get("models", []):
+                    ctx = m.get("inputTokenLimit")
+                    name = (m.get("name") or "").split("/")[-1].lower()
+                    if name and isinstance(ctx, int) and ctx > 0:
+                        _DISCOVERED_CONTEXT_WINDOWS[name] = ctx
+    except Exception as exc:
+        log.warning(f"Model discovery (gemini) failed: {exc}")
+    log.info(f"Model discovery: {len(_DISCOVERED_CONTEXT_WINDOWS)} models loaded.")
+    _DISCOVERY_DONE = True
+
 
 WARN_TIER_ATTENTION = "attention"  # 90%
 WARN_TIER_URGENT = "urgent"        # 95%

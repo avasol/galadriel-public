@@ -559,7 +559,12 @@ class GeminiProvider:
             
         if r.status_code != 200:
             detail = r.text[:200]
-            raise RuntimeError(f"Gemini HTTP {r.status_code}: {detail}")
+            # Attach the HTTP status so the fallback ladder can tell an
+            # outage (429/5xx -> next rung) from a bug (400 -> surface it).
+            # A bare RuntimeError lives in `builtins` and is judged a bug.
+            exc = RuntimeError(f"Gemini HTTP {r.status_code}: {detail}")
+            exc.status_code = r.status_code
+            raise exc
             
         data = r.json()
 
