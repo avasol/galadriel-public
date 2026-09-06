@@ -11,6 +11,7 @@ Run: python -m pytest tests/test_provider_parity.py -q
 (no network, no API spend — the Anthropic client is mocked.)
 """
 import os
+import pytest
 import asyncio
 import sys
 import types
@@ -40,6 +41,15 @@ MESSAGES = [
     {"role": "user", "content": [{"type": "text", "text": "again",
                                   "cache_control": {"type": "ephemeral"}}]},
 ]
+
+
+@pytest.fixture(autouse=True)
+def _clean_provider_env(monkeypatch):
+    """These tests assert DEFAULTS. A runner that itself lives on Gemini with a
+    fallback ladder (AGENT_PROVIDER / AGENT_MODEL_FALLBACKS exported) must not
+    leak into them — found 2026-09-06 when the harness ran its own test suite."""
+    for var in ("AGENT_PROVIDER", "AGENT_MODEL_FALLBACKS"):
+        monkeypatch.delenv(var, raising=False)
 
 
 def _make_mock_client():
@@ -97,10 +107,9 @@ def test_cache_control_markers_preserved():
     assert kwargs["messages"][-1]["content"][-1].get("cache_control") == {"type": "ephemeral"}
 
 
-def test_make_provider_defaults_to_anthropic(monkeypatch):
+def test_make_provider_defaults_to_anthropic():
     """Selection must default to anthropic so the live hot path is unchanged
     unless AGENT_PROVIDER is explicitly set."""
-    monkeypatch.delenv("AGENT_PROVIDER", raising=False)  # a test of the DEFAULT must not inherit the runner's env
     client, _ = _make_mock_client()
     provider = make_provider(provider_name=None, anthropic_client=client)
     assert isinstance(provider, AnthropicProvider)
