@@ -2,7 +2,7 @@
 
 ## About Your User
 
-- **User Name:** Lord Isildur  ← change this to whatever you want to be called
+- **User Name:** [Your Name / Operator Handle]  ← change this to whatever you want to be called (e.g. Alice, Bob)
 - **Authorized Discord ID:** [your-discord-user-id]
 
 ## Constraints

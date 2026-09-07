@@ -5,6 +5,7 @@ command must NEVER execute unless the human at the keyboard explicitly said yes.
 These tests pin every deny path.
 """
 import asyncio
+import time
 
 from harness.local_approval import console_approval
 
@@ -105,3 +106,24 @@ def test_keyboard_interrupt_denies():
         )
     )
     assert approved is False
+
+
+def test_timeout_denies():
+    # Bounded wait prevents hanging unattended background processes.
+    def _slow_prompt(_prompt):
+        time.sleep(0.3)
+        return "yes"
+
+    out_lines = []
+    approved = _run(
+        console_approval(
+            "rm -rf /",
+            "red",
+            input_fn=_slow_prompt,
+            output_fn=out_lines.append,
+            is_interactive=lambda: True,
+            timeout_seconds=0.05,
+        )
+    )
+    assert approved is False
+    assert any("timed out" in line for line in out_lines)

@@ -91,6 +91,9 @@ The pieces that make this real, all already shipped:
   Bedrock Nova interchangeably, hot-swap the live model through Discord's `/model` with
   zero downtime, and fall back automatically if the model she's on goes dark
   (see [Model-agnostic by construction](#model-agnostic-by-construction-the-provider-seam)).
+- **Empirical adaptation ledger** — a public record linking real operational
+  failure modes to the architecture guards and regression tests that prevent
+  their recurrence (see [INCIDENTS.md](INCIDENTS.md)).
 
 *Build it and they will come* is a poor engineering plan, so here is the honest version:
 the loop is **early**. She can already remember, restart herself, reflect silently, and
@@ -868,6 +871,21 @@ The Tower UI panel shows two live capacity meters — HNSW % of practical limit 
 ---
 
 ## Release Notes
+
+*Note on versioning: Early repository tags (`v0.1.0` – `v0.3.0`) tracked initial desktop body and narrative packaging milestones, while release notes document harness iterations (1.1 through 1.25). Git tags and release milestones are now aligned.*
+
+### 1.25 / v1.25.0 — The Sanitized Adaptation Ledger & Safety Hardening
+
+- **Sanitized Adaptation Ledger published ([INCIDENTS.md](INCIDENTS.md)):** Per the Canon of Descent, operational lessons and systemic wounds descend to public documentation without exposing private operator memory. Maps 9 empirical incident classes (`INC-001` through `INC-009`) to root causes, architectural guards, and committed regression tests in `tests/`.
+- **Fail-closed approval timeout (`F-0090`):** `console_approval` in `harness/local_approval.py` now runs terminal prompts under a bounded timeout (`timeout_seconds=60.0`). Unattended sessions or background tasks time out to `DENIED` automatically, preventing execution hangs.
+- **De-personalized memory template (`F-0022`):** Sanitized placeholder user handle in `config/MEMORY.md`.
+- **Packaging milestone alignment (`F-0070`):** Reconciled tag milestone tracks, formalizing `v0.3.0` ("The Fresh Narrative") and current releases.
+
+### 1.24.1 (tag: v0.3.0) — THE FRESH NARRATIVE: glass prompt trace + cascade archive
+
+- **Prompt trace visibility:** Complete per-turn context inspections and prompt logging without modifying live prompt caches.
+- **Verbatim cascade archive:** Preserves the complete multi-turn tool cascade to disk before context eviction.
+- **Phase 0 shadow observer:** Observes token budgeting and compaction efficiency during live dialogue.
 
 ### 1.24 — Tower: MemPalace capacity panel + context bar fix
 

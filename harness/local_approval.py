@@ -18,15 +18,18 @@ and the first-run consent gate describe, so the legal text and the code AGREE.
 
 Design
 ------
-- Fail-closed by default: any ambiguity, EOF, non-interactive stdin, or an
-  unrecognised answer is treated as DENY. A signed binary must never execute a
-  destructive command because a prompt was unclear.
+- Fail-closed by default: any ambiguity, EOF, non-interactive stdin, timeout,
+  or an unrecognised answer is treated as DENY. A signed binary must never
+  execute a destructive command because a prompt was unclear or unattended.
 - Non-interactive environments (no TTY — e.g. a service with no console) get an
   auto-deny with a clear log line, preserving the existing safe default.
+- Bounded waiting: interactive prompts time out (default 60s) to prevent
+  background/unattended processes from hanging indefinitely.
 - Pure and dependency-free; unit-testable via the injected `input`/`output`.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from typing import Callable
 
@@ -42,11 +45,13 @@ async def console_approval(
     input_fn: Callable[[str], str] | None = None,
     output_fn: Callable[[str], None] | None = None,
     is_interactive: Callable[[], bool] | None = None,
+    timeout_seconds: float | None = 60.0,
 ) -> bool:
     """Ask the local user to approve a red-tier command. Returns True to run.
 
-    Fail-closed: denies on no-TTY, EOF, or any answer that is not an explicit
-    affirmative. The affirmative set is deliberately small and explicit.
+    Fail-closed: denies on no-TTY, EOF, unrecognised answer, or timeout.
+    The timeout (default 60s) ensures background or unattended processes
+    do not hang indefinitely waiting for keyboard input.
     """
     out = output_fn or _default_output
     interactive = is_interactive or sys.stdin.isatty
@@ -66,9 +71,18 @@ async def console_approval(
         "machine.\nType 'yes' to allow it, anything else to deny."
     )
     try:
-        answer = ask("Allow this command? [yes/No]: ")
+        if timeout_seconds is not None and timeout_seconds > 0:
+            answer = await asyncio.wait_for(
+                asyncio.to_thread(ask, "Allow this command? [yes/No]: "),
+                timeout=timeout_seconds,
+            )
+        else:
+            answer = ask("Allow this command? [yes/No]: ")
     except (EOFError, KeyboardInterrupt):
         out("Denied (no confirmation).")
+        return False
+    except (asyncio.TimeoutError, TimeoutError):
+        out(f"Denied (approval timed out after {timeout_seconds}s without user input).")
         return False
 
     approved = answer.strip().lower() in {"yes", "y"}
