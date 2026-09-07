@@ -390,7 +390,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Archive-Before-Eviction (The Unbroken Thread)**: Slices pruned by routine token-budget trimming, context compaction, or `/new` are archived to the palace before removal.
 
 ### 🧭 2. Compass & Headings (Project-Scoped Cognition)
-- **Instant Heading Switching**: Switch focus between projects with zero downtime and without model amnesia (`config/active_vision.txt`).
+- **Instant Heading Switching**: Switch focus between projects with zero downtime and without model amnesia (`config/compass.json`).
 - **Selective Prefix Scoping**: `config/context_scope.json` filters which project roadmaps and guidelines load into the cached prefix, preventing context dilution.
 - **ChromaDB Native Hall Filtering**: Scoped searches filter directly via Chroma metadata (`where={"hall": hall}`), bypassing unrelated project memories.
 - **Per-Turn Scoping Banners**: Dynamic turn banners orient the mind to the active project's operational rules without thrashing prompt cache.
@@ -489,7 +489,7 @@ forget anything:
 |---|---|
 | `palace` (named volume → `/data`) | The memory palace + conversation archive (`~/.mempalace`) |
 | `./memory` | Daily memory logs (markdown — also visible on your host) |
-| `./config` | `scheduler_state.json`, `ambient_state.json`, `active_vision.txt` |
+| `./config` | `scheduler_state.json`, `ambient_state.json`, `compass.json` |
 
 ### Notes
 
@@ -697,8 +697,8 @@ palace_search(query="restart procedure", room="harness")
 
 ### Switching headings
 
-Via Tower UI: the heading dial in the sidebar (`/api/vision`).
-Via shell: `echo "aedelgard" > config/active_vision.txt`
+Via Tower UI: the heading dial in the sidebar (`/api/compass`).
+Via shell: `python3 -m harness.compass set aedelgard`
 
 The change is visible on the agent's next turn with zero cache invalidation on the stable prefix — only the per-turn dynamic block (already uncached) changes. Config files that enter or leave the scope trigger one cache-write for the affected slice, then read at 10 % cost. There is no restart.
 

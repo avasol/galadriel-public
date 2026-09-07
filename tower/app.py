@@ -311,49 +311,66 @@ def create_tower(agent, scheduler=None) -> Flask:
 
         return jsonify(result)
 
-    # ── Vision API ───────────────────────────────────────────────
+    # ── Compass API ──────────────────────────────────────────────
+
+    @app.route("/api/compass", methods=["GET"])
+    def api_compass_get():
+        """Return the full COMPASS stack: focused, ambient, dormant + available visions."""
+        from harness import compass
+        config_dir = Path(agent.memory.config_dir)
+        st = compass.read_compass(config_dir)
+        st["available"] = compass.available_visions(config_dir)
+        return jsonify(st)
+
+    @app.route("/api/compass", methods=["POST"])
+    def api_compass_set():
+        """Update the COMPASS stack.
+
+        Body: {"focused": "aedelgard"} or full stack.
+        """
+        from harness import compass
+        config_dir = Path(agent.memory.config_dir)
+        data = request.json or {}
+
+        kwargs = {}
+        if "focused" in data:
+            kwargs["focused"] = data["focused"]
+        if "ambient" in data:
+            kwargs["ambient"] = data["ambient"]
+        if "dormant" in data:
+            kwargs["dormant"] = data["dormant"]
+
+        res = compass.set_compass(config_dir=config_dir, set_by="tower_api", **kwargs)
+        if "error" in res:
+            return jsonify(res), 404
+        return jsonify(res)
+
+    # ── Vision API (Legacy alias for /api/compass) ───────────────
 
     @app.route("/api/vision", methods=["GET"])
     def api_vision_get():
-        """Return the active vision and the list of available ones."""
+        """Legacy alias for /api/compass. Return the active vision and available ones."""
+        from harness import compass
         config_dir = Path(agent.memory.config_dir)
-        visions_dir = config_dir / "visions"
-        active_file = config_dir / "active_vision.txt"
-
-        available = []
-        if visions_dir.is_dir():
-            available = sorted(f.stem for f in visions_dir.glob("*.md"))
-
-        active = None
-        if active_file.exists():
-            active = active_file.read_text(encoding="utf-8").strip() or None
-
-        return jsonify({"active": active, "available": available})
+        return jsonify({
+            "active": compass.get_focused(config_dir),
+            "available": compass.available_visions(config_dir),
+        })
 
     @app.route("/api/vision", methods=["POST"])
     def api_vision_set():
-        """Set the active vision. Pass {"name": "<stem>"} or {"name": ""} to clear.
+        """Legacy alias for /api/compass POST {"name": stem}.
 
-        The change takes effect on the NEXT API call — existing cached
-        prefixes become stale and will be re-cached naturally.
+        Mutates compass directly to prevent split-brain drift.
         """
+        from harness import compass
         data = request.json or {}
         name = (data.get("name") or "").strip()
-
         config_dir = Path(agent.memory.config_dir)
-        visions_dir = config_dir / "visions"
-        active_file = config_dir / "active_vision.txt"
-
-        if name:
-            vision_path = visions_dir / f"{name}.md"
-            if not vision_path.exists():
-                return jsonify({"error": f"Vision '{name}' not found"}), 404
-            active_file.write_text(name, encoding="utf-8")
-        else:
-            if active_file.exists():
-                active_file.unlink()
-
-        return jsonify({"active": name or None})
+        res = compass.set_compass(config_dir=config_dir, focused=name, set_by="tower_vision_legacy")
+        if "error" in res:
+            return jsonify(res), 404
+        return jsonify({"active": compass.get_focused(config_dir)})
 
     # ── Scheduler API ────────────────────────────────────────────
 

@@ -186,34 +186,28 @@ class MemoryManager:
     def _load_active_vision(self) -> str | None:
         """Load the currently active VISION (project focus).
 
-        Controlled by config/active_vision.txt which contains the stem name
-        of a file in config/visions/. Only one vision loads at a time.
-        Tower can change the active vision via /api/vision.
+        Controlled by the compass heading (config/compass.json focused).
+        Loads config/visions/{name}.md into the stable prefix.
         """
-        active_file = self.config_dir / ACTIVE_VISION_FILE
-        if not active_file.exists():
-            return None
-        name = active_file.read_text(encoding="utf-8").strip()
+        name = self._active_project_name()
         if not name:
             return None
         vision_path = self.config_dir / VISIONS_DIR / f"{name}.md"
         return self._read_file(vision_path)
 
     def _active_project_name(self) -> str | None:
-        """Return the current active-project name (the stem in active_vision.txt),
+        """Return the current active-project name (the focused heading from the compass),
         or None if unset.
-
-        This is the lightweight counterpart to _load_active_vision(): instead of
-        loading the whole vision file into the (cached) stable block, it returns
-        just the name so a per-turn scoping banner can be placed in the dynamic
-        block. Toggling the project is then instantly visible without paying a
-        cache invalidation. Tower writes this file via /api/vision.
         """
-        active_file = self.config_dir / ACTIVE_VISION_FILE
-        if not active_file.exists():
-            return None
-        name = active_file.read_text(encoding="utf-8").strip()
-        return name or None
+        try:
+            from . import compass
+            return compass.get_focused(self.config_dir)
+        except Exception:
+            active_file = self.config_dir / ACTIVE_VISION_FILE
+            if not active_file.exists():
+                return None
+            name = active_file.read_text(encoding="utf-8").strip()
+            return name or None
 
     def _no_palace_mode(self) -> bool:
         """True when this session runs in stateless / no-palace mode
