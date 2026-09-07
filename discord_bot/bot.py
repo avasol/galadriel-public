@@ -1,3 +1,4 @@
+from harness.response_status import present
 """Discord gateway — relays messages between Discord and the GaladrielAgent."""
 
 import os
@@ -421,7 +422,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
         multi-chunk answer reads as one flowing reply instead of several
         separate reply-blocks stacked on top of each other.
         """
-        chunks = chunk_message(text)
+        chunks = chunk_message(present(text))
         for i, chunk in enumerate(chunks):
             if i == 0:
                 try:

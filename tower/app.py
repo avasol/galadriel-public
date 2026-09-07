@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import TimeoutError as FuturesTimeout
+from harness.response_status import present, status_of, Reply
 from flask import Flask, render_template, request, jsonify
 
 log = logging.getLogger("galadriel.tower")
@@ -76,7 +77,7 @@ def create_tower(agent, scheduler=None) -> Flask:
                 trim_count = getattr(agent, "last_trim_count", 0)
                 if trim_count:
                     agent.last_trim_count = 0  # clear after read
-                return jsonify({"response": response, "usage": getattr(agent, "last_usage", {}) or {}, "trim_count": trim_count})
+                return jsonify({"response": str(response), "display_response": present(response), "status": status_of(response), "usage": getattr(agent, "last_usage", {}) or {}, "trim_count": trim_count})
             except FuturesTimeout:
                 # Don't drop the connection (-> browser 'Failed to fetch'); the
                 # mind is still thinking. Tell the user honestly so they can wait
@@ -97,7 +98,7 @@ def create_tower(agent, scheduler=None) -> Flask:
                 trim_count = getattr(agent, "last_trim_count", 0)
                 if trim_count:
                     agent.last_trim_count = 0  # clear after read
-                return jsonify({"response": response, "usage": getattr(agent, "last_usage", {}) or {}, "trim_count": trim_count})
+                return jsonify({"response": str(response), "display_response": present(response), "status": status_of(response), "usage": getattr(agent, "last_usage", {}) or {}, "trim_count": trim_count})
             except Exception as e:
                 log.exception("Tower chat error")
                 return jsonify({"error": str(e)}), 500
@@ -122,7 +123,7 @@ def create_tower(agent, scheduler=None) -> Flask:
                         texts.append(str(block["content"])[:200])
                 if texts:
                     history.append({"role": msg["role"], "text": "\n".join(texts)})
-        return jsonify({"history": history})
+        return jsonify({"history": [{**h, "display_text": present(h["text"], agent) if h["role"] == "assistant" else h["text"]} for h in history]})
 
     @app.route("/api/clear", methods=["POST"])
     def api_clear():

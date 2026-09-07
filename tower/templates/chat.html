@@ -145,6 +145,7 @@
   .palace-err{font-size:11px;color:#e08a7a;font-family:'JetBrains Mono',monospace;
     margin-top:6px;line-height:1.5}
   @media(max-width:820px){.cachepanel{position:fixed;right:0;top:0;bottom:0;z-index:40;box-shadow:-12px 0 40px rgba(0,0,0,.5)}}
+.response-status{display:block;font-size:12px;line-height:1.7;color:#cbb88e;background:rgba(232,184,120,.055);border:1px solid rgba(232,184,120,.18);border-radius:8px;padding:7px 11px;margin:0 0 14px;overflow-wrap:anywhere;font-family:system-ui,sans-serif}.response-status strong{font-weight:600}
 </style>
 </head>
 <body>
@@ -284,6 +285,15 @@
   // ── minimal, safe markdown → html ──
   function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
   function md(src){
+    src=String(src||'');
+    if(src.indexOf('🧭 **')===0){
+      var cut=src.indexOf('\n\n');
+      if(cut>=0){
+        var line=esc(src.slice(0,cut)).replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+        return '<div class="response-status" aria-label="Response status">'+line+'</div>'+md(src.slice(cut+2));
+      }
+    }
+
     var out=[], lines=String(src||'').split('\n'), i=0;
     function inline(t){
       return esc(t)
@@ -329,7 +339,7 @@
         // A 504 "still thinking" or an empty response means the turn outran the
         // request window but is finishing server-side — recover it from history
         // rather than leaving the user staring at an error / blank bubble.
-        var resp = d && d.response ? d.response : '';
+        var resp = d && d.response ? (d.display_response || d.response) : '';
         if(d.error || !resp.trim()){
           recoverFromHistory(bodyEl, 0);
           return;
@@ -441,7 +451,7 @@
   // ── load existing history ──
   fetch('/api/history?channel=tower').then(function(r){return r.json();}).then(function(d){
     (d.history||[]).forEach(function(msg){
-      addMsg(msg.role==='user'?'user':'assistant', md(msg.text));
+      addMsg(msg.role==='user'?'user':'assistant', md(msg.display_text||msg.text));
     });
     $scroll.scrollTop=$scroll.scrollHeight;
   }).catch(function(){});

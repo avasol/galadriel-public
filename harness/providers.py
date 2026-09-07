@@ -524,6 +524,8 @@ class OpenAIProvider:
                              max(prompt - cached, 0),
                              u.get("output_tokens", 0) or 0)
         resp.usage.cache_read_input_tokens = cached
+        resp.model = data.get("model") or oai_model
+        resp.status_usage_available = bool(data.get("usage"))
         return resp
 
 
@@ -618,6 +620,8 @@ class OpenAIProvider:
                              max(prompt - cached, 0),
                              u.get("completion_tokens", 0) or 0)
         resp.usage.cache_read_input_tokens = cached
+        resp.model = data.get("model") or oai_model
+        resp.status_usage_available = bool(data.get("usage"))
         return resp
 
     def usage(self, raw) -> Usage:
@@ -851,8 +855,11 @@ class BedrockNovaProvider:
         # Anthropic-side max_tokens it never receives from Nova).
         stop = "tool_use" if resp.get("stopReason") == "tool_use" else "end_turn"
         u = resp.get("usage", {})
-        return _NovaResponse(out_blocks, stop,
-                             u.get("inputTokens", 0), u.get("outputTokens", 0))
+        result = _NovaResponse(out_blocks, stop,
+                               u.get("inputTokens", 0), u.get("outputTokens", 0))
+        result.model = self.model_id
+        result.status_usage_available = bool(u)
+        return result
 
     def usage(self, raw) -> Usage:
         u = raw.usage
@@ -1200,6 +1207,8 @@ class GeminiProvider:
         )
         resp.usage.cache_read_input_tokens = cache_read
         resp.usage.cache_creation_input_tokens = cache_write
+        resp.model = data.get("modelVersion") or gem_model
+        resp.status_usage_available = bool(um)
         return resp
 
     def usage(self, raw) -> Usage:

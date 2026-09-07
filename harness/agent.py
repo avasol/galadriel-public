@@ -28,6 +28,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from .response_status import with_status, with_stream_status, record as record_response_status
 from .providers import make_provider
 from .memory import MemoryManager
 from .journal import ConversationJournal
@@ -952,6 +953,7 @@ class GaladrielAgent:
         Cold/miss:
             cache_read = 0, cache_write ≈ prefix size.
         """
+        record_response_status(self, response)
         usage = response.usage
         try:
             inp = usage.input_tokens
@@ -995,6 +997,7 @@ class GaladrielAgent:
             return True
         return False
 
+    @with_status
     async def respond(self, user_message: str | list, channel_id: str = "default") -> str:
         messages = self._get_messages(channel_id)
         messages.append({"role": "user", "content": user_message})

@@ -679,7 +679,8 @@ class Scheduler:
         # Chunk long messages
         max_len = 1900
         chunks = []
-        text = message
+        from .response_status import present
+        text = present(message)
         while text:
             if len(text) <= max_len:
                 chunks.append(text)
