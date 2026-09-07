@@ -130,7 +130,7 @@ def test_sweep_recovers_and_drops_vanished(tmp_path: Path):
         return True
 
     s = run(g.sweep_unmined(tmp_path, mine))
-    assert s == {"queued": 2, "recovered": 1, "dropped": 1, "still_failing": 0}
+    assert s == {"queued": 2, "recovered": 1, "dropped": 1, "still_failing": 0, "quarantined": 0, "waiting": 0}
     assert seen == [live]
     assert g.load_queue(tmp_path) == []
 
@@ -151,3 +151,85 @@ def test_doctor_reports_queue(tmp_path: Path):
     g.enqueue_failure(tmp_path, bd, g.MineDiagnosis(kind="lock", holder_pid=7), agent="a", wing="w", mode=None, extract=None)
     out = g.doctor(tmp_path)
     assert "unmined queue: 1 entry" in out and "agent_add_q" in out and "kind=lock" in out
+
+
+# ── 2026-09-07: doomed mines must not be retried forever, and bulk
+#    ingests must be refused before they hold the lock ──────────────────────
+
+def _diag_timeout():
+    return g.MineDiagnosis(kind="timeout", detail="180s")
+
+
+def test_enqueue_backoff_grows_and_quarantines(tmp_path):
+    bd = tmp_path / "batch"
+    bd.mkdir()
+    (bd / "a.md").write_text("x")
+    for i in range(1, g.QUEUE_MAX_FAILURES + 1):
+        g.enqueue_failure(tmp_path, bd, _diag_timeout(), agent="a", wing="w", mode=None, extract=None)
+        e = g.load_queue(tmp_path)[0]
+        assert e["failures"] == i
+        assert e["next_retry"] > 0 if i > 1 else e["next_retry"] <= __import__("time").time()
+        if i < g.QUEUE_MAX_FAILURES:
+            assert e["quarantined"] is False
+    assert g.load_queue(tmp_path)[0]["quarantined"] is True
+
+
+def test_sweep_skips_waiting_and_quarantined(tmp_path):
+    """A freshly failed entry is in backoff; a quarantined one is never tried.
+    Neither reaches the miner."""
+    a = tmp_path / "a"; a.mkdir(); (a / "x.md").write_text("x")
+    q = tmp_path / "q"; q.mkdir(); (q / "x.md").write_text("x")
+    g.enqueue_failure(tmp_path, a, _diag_timeout(), agent="a", wing="w", mode=None, extract=None)
+    g.enqueue_failure(tmp_path, a, _diag_timeout(), agent="a", wing="w", mode=None, extract=None)  # 2nd → backoff
+    for _ in range(g.QUEUE_MAX_FAILURES):
+        g.enqueue_failure(tmp_path, q, _diag_timeout(), agent="a", wing="w", mode=None, extract=None)
+    mined = []
+
+    async def mine(bd, agent, wing, mode, extract):
+        mined.append(bd.name)
+        return True
+
+    s = run(g.sweep_unmined(tmp_path, mine))
+    assert mined == []
+    assert s["waiting"] == 1 and s["quarantined"] == 1 and s["recovered"] == 0
+
+
+def test_release_quarantine_makes_entry_due_again(tmp_path):
+    q = tmp_path / "q"; q.mkdir(); (q / "x.md").write_text("x")
+    for _ in range(g.QUEUE_MAX_FAILURES):
+        g.enqueue_failure(tmp_path, q, _diag_timeout(), agent="a", wing="w", mode=None, extract=None)
+    assert g.release_quarantine(tmp_path, q) is True
+    mined = []
+
+    async def mine(bd, agent, wing, mode, extract):
+        mined.append(bd.name)
+        return True
+
+    s = run(g.sweep_unmined(tmp_path, mine))
+    assert mined == ["q"] and s["recovered"] == 1
+    assert g.load_queue(tmp_path) == []
+
+
+def test_preflight_refuses_bulk_tree(tmp_path):
+    bd = tmp_path / "memory"
+    (bd / "journal").mkdir(parents=True)
+    for i in range(g.MAX_BATCH_FILES + 1):
+        (bd / "journal" / f"{i}.jsonl").write_text("{}")
+    d = g.preflight(bd)
+    assert d is not None and d.kind == "oversize"
+    assert "files" in d.human()
+
+
+def test_preflight_passes_a_filing(tmp_path):
+    bd = tmp_path / "agent_add_x"
+    bd.mkdir()
+    (bd / "note.md").write_text("a thought")
+    assert g.preflight(bd) is None
+
+
+def test_doctor_shows_quarantine_and_cause(tmp_path):
+    q = tmp_path / "q"; q.mkdir(); (q / "x.md").write_text("x")
+    for _ in range(g.QUEUE_MAX_FAILURES):
+        g.enqueue_failure(tmp_path, q, _diag_timeout(), agent="a", wing="w", mode=None, extract=None)
+    out = g.doctor(tmp_path)
+    assert "QUARANTINED" in out and "180s" in out

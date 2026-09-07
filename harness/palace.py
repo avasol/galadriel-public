@@ -421,6 +421,14 @@ async def mine_batch_dir(
     /new conversation archival path.
     """
     global LAST_MINE_DIAGNOSIS
+    # Pre-flight: a batch no filing could produce is refused, not attempted
+    # and not queued — a doomed mine holds the palace lock for its whole
+    # timeout, and its retry does it again.
+    refused = mine_guard.preflight(Path(batch_dir))
+    if refused is not None:
+        LAST_MINE_DIAGNOSIS = refused
+        log.error(f"Palace mine REFUSED for {Path(batch_dir)}: {refused.human()}")
+        return False
     args = ["--palace", _palace_path(), "mine", str(batch_dir), "--wing", DEFAULT_WING, "--agent", agent]
     if mode:
         args += ["--mode", mode]
@@ -596,20 +604,65 @@ async def archive_conversation(channel_id: str, messages: list[dict],
         )
 
 
+def stage_daily_logs(memory_dir: Path, stage_dir: Path | None = None,
+                     *, recent_days: int = 14) -> Path | None:
+    """Copy ONLY the daily-log summaries (memory/YYYY-MM-DD.md) into a stable
+    staging directory and return it — or None if nothing changed.
+
+    Why a stage and not the memory dir itself: memory/ also holds journal
+    turns, cascade traces, prompt snapshots and cost rows. Handed that tree,
+    mempalace files hundreds of thousands of drawers of plumbing and never
+    finishes inside its timeout — so the goodnight archive silently does
+    nothing, night after night. Only the .md summaries are memory.
+
+    The stage path is stable so mempalace's mtime dedup still applies across
+    nights: copy2 preserves mtime, unchanged files are skipped by the miner.
+    Only logs touched in the last *recent_days* are staged.
+    """
+    import shutil
+    import time as _time
+    memory_dir = Path(memory_dir)
+    stage_dir = Path(stage_dir) if stage_dir else _archive_root() / "daily_logs"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    cutoff = _time.time() - recent_days * 86400
+    staged = 0
+    for src in sorted(memory_dir.glob("[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md")):
+        try:
+            st = src.stat()
+        except OSError:
+            continue
+        if st.st_mtime < cutoff:
+            continue
+        dst = stage_dir / src.name
+        try:
+            if dst.exists() and abs(dst.stat().st_mtime - st.st_mtime) < 1 and dst.stat().st_size == st.st_size:
+                continue
+            shutil.copy2(src, dst)
+            staged += 1
+        except OSError as e:
+            log.warning(f"Daily-log stage: could not copy {src.name}: {e}")
+    log.info(f"Daily-log stage: {staged} log(s) updated in {stage_dir}")
+    return stage_dir if staged else None
+
+
 async def archive_daily_logs(memory_dir: str = "memory") -> None:
-    """Mine the daily-log directory so today's entries become palace-searchable.
+    """Mine the daily-log summaries so today's entries become palace-searchable.
     Typically called at the goodnight tick.
 
-    Uses mempalace's natural deduplication (mtime-based) so re-mining the
-    same dir only files new content. No need to track state separately.
+    Mines a staged copy of memory/*.md ONLY (see stage_daily_logs) — never
+    the raw memory/ tree. mempalace's mtime dedup keeps re-mining cheap.
     """
     memory_path = Path(memory_dir)
     if not memory_path.is_dir():
         log.warning(f"Daily-log archive: {memory_dir} does not exist, skipping")
         return
-    ok = await mine_batch_dir(memory_path, agent="goodnight")
+    stage = stage_daily_logs(memory_path)
+    if stage is None:
+        log.info("Daily-log archive: nothing new to mine")
+        return
+    ok = await mine_batch_dir(stage, agent="goodnight")
     if ok:
-        log.info(f"Palace daily-log mine complete: {memory_dir}")
+        log.info(f"Palace daily-log mine complete: {stage}")
 
 
 # ─── Wake-up injection ─────────────────────────────────────────────

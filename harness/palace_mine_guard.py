@@ -54,6 +54,19 @@ MINE_MAX_ATTEMPTS = 3
 # Background sweep cadence and per-sweep batch.
 SWEEP_INTERVAL_SEC = int(os.environ.get("PALACE_UNMINED_SWEEP_SEC", "600"))
 SWEEP_BATCH = 10
+# A queued failure is retried with exponential backoff (interval × 2^failures,
+# capped) and QUARANTINED after this many failures: a mine that has failed six
+# times the same way is deterministic, and retrying it every sweep only burns
+# the palace lock (observed 2026-09-07: one 180s-timeout batch retried 16×,
+# ~30% lock occupancy, every retry doomed).
+QUEUE_MAX_FAILURES = int(os.environ.get("PALACE_UNMINED_MAX_FAILURES", "6"))
+QUEUE_BACKOFF_CAP_SEC = int(os.environ.get("PALACE_UNMINED_BACKOFF_CAP_SEC", "21600"))
+# Pre-flight budget for one mine. A batch beyond these is never a legitimate
+# drawer filing or daily-log archive — it is a bulk-ingest by mistake (the
+# 2026-09-03 wound: 88k noise drawers; 2026-09-07: a whole memory/ tree =
+# 944 files / 610k drawers). Refused with kind="oversize"; not queued.
+MAX_BATCH_FILES = int(os.environ.get("PALACE_MINE_MAX_FILES", "300"))
+MAX_BATCH_BYTES = int(os.environ.get("PALACE_MINE_MAX_BYTES", str(25 * 1024 * 1024)))
 
 _HOLDER_RE = re.compile(r"is held by PID (\d+)(?: \(([^)]*)\))?")
 
@@ -95,6 +108,8 @@ class MineDiagnosis:
                     f"over {self.attempts} attempt(s)")
         if self.kind == "timeout":
             return f"miner exceeded its timeout ({self.detail})"
+        if self.kind == "oversize":
+            return f"batch refused before mining — {self.detail}"
         return f"miner rc={self.rc}: {_short(self.detail, 220)}"
 
 
@@ -162,6 +177,37 @@ def holder_cmdline(pid: int) -> Optional[str]:
         return None
 
 
+# ── Pre-flight ───────────────────────────────────────────────────────────────
+
+def measure_batch(batch_dir: Path) -> tuple[int, int]:
+    """(files, bytes) under *batch_dir*, recursively. Cheap: stat only."""
+    files = 0
+    size = 0
+    for p in Path(batch_dir).rglob("*"):
+        if p.is_file():
+            files += 1
+            try:
+                size += p.stat().st_size
+            except OSError:
+                pass
+    return files, size
+
+
+def preflight(batch_dir: Path, *, max_files: int = MAX_BATCH_FILES,
+              max_bytes: int = MAX_BATCH_BYTES) -> Optional[MineDiagnosis]:
+    """Refuse a batch that no legitimate filing could produce. Returns a
+    diagnosis (kind="oversize") to refuse with, or None to proceed."""
+    files, size = measure_batch(batch_dir)
+    if files > max_files or size > max_bytes:
+        return MineDiagnosis(
+            kind="oversize", rc=None,
+            detail=(f"{files} files / {size / 1_048_576:.1f} MiB exceeds the mine budget "
+                    f"({max_files} files / {max_bytes / 1_048_576:.0f} MiB). "
+                    f"This is a bulk ingest, not a filing: stage what you mean to mine."),
+        )
+    return None
+
+
 # ── Guarded mine ─────────────────────────────────────────────────────────────
 
 async def guarded_mine(run_once: RunOnce, *, label: str = "mine",
@@ -219,17 +265,44 @@ def enqueue_failure(archive_root: Path, batch_dir: Path, diag: MineDiagnosis,
     """Append an unrecovered failure. Returns the queue depth after the append.
     Idempotent per batch_dir: a re-failure updates the existing entry."""
     qp = queue_path(archive_root)
-    entries = [e for e in load_queue(archive_root) if e.get("batch_dir") != str(batch_dir)]
+    existing = load_queue(archive_root)
+    entries = [e for e in existing if e.get("batch_dir") != str(batch_dir)]
+    failures = 1 + next((e.get("failures", 0) for e in existing
+                         if e.get("batch_dir") == str(batch_dir)), 0)
+    quarantined = failures >= QUEUE_MAX_FAILURES
+    # First failure: due at the very next sweep (a lock collision usually
+    # clears in seconds). From the second on: 10m, 20m, 40m, ... capped.
+    backoff = 0 if failures == 1 else min(SWEEP_INTERVAL_SEC * (2 ** (failures - 2)), QUEUE_BACKOFF_CAP_SEC)
     entries.append({
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "batch_dir": str(batch_dir),
         "agent": agent, "wing": wing, "mode": mode, "extract": extract,
         "diag": asdict(diag),
-        "failures": 1 + next((e.get("failures", 0) for e in load_queue(archive_root)
-                              if e.get("batch_dir") == str(batch_dir)), 0),
+        "failures": failures,
+        "next_retry": time.time() + backoff,
+        "quarantined": quarantined,
     })
     _write_queue(qp, entries)
+    if quarantined:
+        log.error(f"unmined QUARANTINE: {Path(batch_dir).name} failed {failures}× "
+                  f"({diag.human()}) — no further automatic retries; content is on disk. "
+                  f"Inspect: python -m harness.palace_mine_guard <archive_root>")
     return len(entries)
+
+
+def release_quarantine(archive_root: Path, batch_dir: Path) -> bool:
+    """Manual: reset a quarantined entry so the sweeper tries it again."""
+    entries = load_queue(archive_root)
+    hit = False
+    for e in entries:
+        if e.get("batch_dir") == str(batch_dir):
+            e["failures"] = 0
+            e["quarantined"] = False
+            e["next_retry"] = 0
+            hit = True
+    if hit:
+        _write_queue(queue_path(archive_root), entries)
+    return hit
 
 
 def load_queue(archive_root: Path) -> list[dict]:
@@ -271,13 +344,25 @@ async def sweep_unmined(archive_root: Path, mine: MineFn, *, batch: int = SWEEP_
     """Re-mine queued failures (oldest first). Entries whose directory vanished
     are dropped. Returns a summary dict; never raises."""
     entries = load_queue(archive_root)
-    summary = {"queued": len(entries), "recovered": 0, "dropped": 0, "still_failing": 0}
-    for e in entries[:batch]:
+    summary = {"queued": len(entries), "recovered": 0, "dropped": 0,
+               "still_failing": 0, "quarantined": 0, "waiting": 0}
+    now = time.time()
+    tried = 0
+    for e in entries:
+        if tried >= batch:
+            break
         bd = Path(e.get("batch_dir", ""))
         if not bd.exists():
             dequeue(archive_root, bd)
             summary["dropped"] += 1
             continue
+        if e.get("quarantined"):
+            summary["quarantined"] += 1
+            continue
+        if float(e.get("next_retry", 0) or 0) > now:
+            summary["waiting"] += 1
+            continue
+        tried += 1
         try:
             ok = await mine(bd, e.get("agent") or "agent-add", e.get("wing") or "",
                             e.get("mode"), e.get("extract"))
@@ -343,8 +428,15 @@ def doctor(archive_root: Path, palace_path: Optional[str] = None) -> str:
     lines.append(f"unmined queue: {len(q)} entr{'y' if len(q) == 1 else 'ies'} at {queue_path(Path(archive_root))}")
     for e in q[:20]:
         d = e.get("diag", {})
+        if e.get("quarantined"):
+            state = "QUARANTINED (manual: release_quarantine)"
+        else:
+            wait = float(e.get("next_retry", 0) or 0) - time.time()
+            state = f"retry in {wait / 60:.0f}m" if wait > 0 else "due"
         lines.append(f"  {e.get('ts')}  {Path(e.get('batch_dir', '')).name}  "
-                     f"kind={d.get('kind')} failures={e.get('failures', 1)}")
+                     f"kind={d.get('kind')} failures={e.get('failures', 1)}  {state}")
+        if d.get("detail") and d.get("kind") in ("timeout", "error", "oversize"):
+            lines.append(f"      → {_short(d.get('detail'), 160)}")
     return "\n".join(lines)
 
 
