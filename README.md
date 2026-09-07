@@ -73,6 +73,20 @@ the thing this repo is actually about: an agent that notices a gap in how it wor
 **writes the fix into its own code, restarts itself, and remembers why** — closing the
 loop without a human in it.
 
+### The world since: why naive memory fails
+
+When persistent agent experiments began in early 2026, LLMs were treated as ephemeral session calculators.
+Since then, the AI landscape has attempted to solve continuity in two incomplete ways:
+
+1. **Vendor-locked proprietary memory** (e.g. OpenAI Memories, Anthropic Memory Tool): The provider owns your continuity. Your agent's memory cannot be audited locally, cannot be exported cleanly, and cannot travel. If you want to switch models or providers tomorrow, your agent's memory stays behind in that vendor's cloud.
+2. **Naive vector search over chat transcripts**: Dumping raw conversational transcripts into a flat vector database and pulling top-k chunks. Over multi-month operational horizons, this breaks down: it has no awareness of time (stale facts conflict with new ones), no mechanism for contradiction, causes prompt bloat, and leads to semantic degradation.
+3. **Unmanaged self-evolution**: As demonstrated in recent systematic analyses of evolving agent systems (such as the independent *EMI Survey of 15 Evolving Agent Systems*), agents that self-modify without strict operational lifecycle controls suffer from runaway commit sprawl, tool-pair deadlock loops, database lock thrashing, and amnesia across process restarts.
+
+Galadriel was engineered from first principles as an open, sovereign counter-movement:
+
+- **Separate the mind from the brain power**: The *mind* is the soul, the episodic memory, and the temporal knowledge graph — sovereign, local, and portable. The *brain* is rented commodity intelligence (Claude, Gemini, Nova, local models) swappable on the fly.
+- **Empirical behavioral adaptation**: Self-correction is governed by **Scar Tissue** — compound failure patterns promote mandatory operational checks that graduate into code and deterministic tests (audited in [INCIDENTS.md](INCIDENTS.md)).
+
 The pieces that make this real, all already shipped:
 
 - **A memory palace** built on the independent [**MemPalace**](https://github.com/MemPalace/mempalace)
@@ -153,11 +167,19 @@ instead? See [Quick Start](#quick-start).
 
 ---
 
-## 🟢 SIGNIFICANT CHANGE — 1.12: Persistent verbatim memory, at zero API cost
+## 🏛️ Memory Architecture: Facts vs. True Memory
 
-Galadriel just grew a memory palace. Not a vector-DB-as-a-service. Not a paid tier. A local, embedded, verbatim store of everything she has ever written — searchable by meaning, not just keywords — with **zero Anthropic tokens spent on retrieval**.
+True memory is not a flat vector search over raw chat transcripts, nor is it a proprietary black box hosted on a provider's server. Human memory operates across multiple cognitive strata: verbatim episodic recall, structured temporal beliefs about how facts change over time, and a reflective core sense of identity.
 
-The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library. MemPalace does the real work (storage, embeddings, knowledge graph, temporal reasoning, compression). This harness adds the wrappers that expose it to the agent as **13 palace tools** (17 total) and wires them into the lifecycle — conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with her own continuity.
+Galadriel's memory engine — built on the local-first [**MemPalace**](https://github.com/MemPalace/mempalace) library — organizes memory into three distinct, cooperating layers:
+
+| Memory Layer | Storage Substrate | What It Holds | API Cost |
+|---|---|---|---|
+| **1. Episodic Drawers** | Local ChromaDB (MiniLM vectors) | Verbatim conversation slices, daily logs, decisions, operational notes | **Zero tokens** (local vector search) |
+| **2. Temporal Knowledge Graph** | Local SQLite (relational triples) | Structured facts with validity windows (`valid_from` → `valid_to`), single-valued fact deliberation | **Zero tokens** (local graph query) |
+| **3. Curated Identity & Cognition** | Markdown + SQLite Diary | Core values (`SOUL.md`), operational constraints (`MEMORY.md`), session diary, ambient reflections | Cached prefix (~90% discount) |
+
+The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library that provides the core primitives (storage, embeddings, temporal knowledge graph, AAAK compression). This harness adds the agent-facing Python wrappers, exposing them as **13 palace tools** (17 tools total) wired directly into the agent's lifecycle: conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with unbroken continuity. Not a vector-DB-as-a-service. Not a paid tier. A local, embedded, verbatim store of everything she has ever written — searchable by meaning, not just keywords — with **zero Anthropic or Google tokens spent on retrieval**.
 
 **Why this is the headline change:**
 
@@ -277,10 +299,9 @@ ones as superseded rather than guessing. A mind renamed `A → B → A` wakes up
 
 ---
 
-## Running costs: prompt caching, in practice
+## 💰 Economic Foundation: Multi-Provider Prompt Caching
 
-Every API call re-sends your system prompt — personality, memory files, tool schemas —
-at full price unless caching engages. Both brains this harness ships with discount a
+Every API call re-sends your system prompt — personality, memory files, tool schemas — at full price unless caching engages. When this project began in early 2026, prompt caching was a novelty; today, it is the fundamental economic baseline for running persistent personal agents affordably. Both brains this harness ships with discount a
 cached re-read by roughly 90%: Anthropic
 ([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching))
 and Google ([context caching](https://ai.google.dev/gemini-api/docs/caching)). On a
@@ -357,17 +378,50 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 
 ---
 
-## Features
+## ⚡ Features & Capabilities
 
-- **Discord gateway** — DMs, channel mentions, or a dedicated channel; gated by user ID
-- **Web UI (Tower)** — local chat interface and dashboard at `localhost:8080`
-- **Tool use** — 14 tools: shell execution, file read/write, memory logging, and 10 [MemPalace](https://github.com/MemPalace/mempalace) tools (semantic search, knowledge graph, diary, taxonomy); all async, non-blocking
-- **Persistent verbatim memory** — local MemPalace integration with wings/rooms/halls/drawers, zero-token retrieval, archive-before-clear on `/new`, goodnight mine of daily logs, wake-up snapshot in the dynamic block
-- **Safety tiers** — green (auto), yellow (notify), red (Discord button approval — waits indefinitely by default, chained commands classified by their most severe segment)
-- **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (silent palace-only thinking on a workday cadence)
-- **Job watcher** — monitors `/tmp/galadriel-jobs/*.done` markers and reports completions
-- **Compaction** — Haiku-powered context compression on demand (archives verbatim tool_results to the palace before summarizing)
-- **Prompt caching on every brain that supports it** — Claude breakpoints, Gemini cached contents; automatically managed, always active
+### 🧠 1. Sovereign Memory (Facts vs. True Memory)
+- **3-Layer Memory Topology**: Episodic verbatim drawers (ChromaDB), Temporal Knowledge Graph (SQLite triples with validity windows), and Curated Cognitive Sediment (Diary & Soul).
+- **Zero-API-Cost Recall**: Semantic search, taxonomy introspection, and graph traversals execute locally at zero Anthropic/Google token spend.
+- **Single-Valued Fact Deliberation**: Built-in resolver for single-valued predicates (`named_self`, `current_model`) ensures changing self-attributes never revert to stale triples.
+- **Forgetting as a First-Class Feature**: Controlled amnesia via `--no-palace` (withholding palace tools from context) and explicit two-step memory retirement (`palace_retire_drawer`).
+- **Archive-Before-Eviction (The Unbroken Thread)**: Slices pruned by routine token-budget trimming, context compaction, or `/new` are archived to the palace before removal.
+
+### 🧭 2. Compass & Headings (Project-Scoped Cognition)
+- **Instant Heading Switching**: Switch focus between projects with zero downtime and without model amnesia (`config/active_vision.txt`).
+- **Selective Prefix Scoping**: `config/context_scope.json` filters which project roadmaps and guidelines load into the cached prefix, preventing context dilution.
+- **ChromaDB Native Hall Filtering**: Scoped searches filter directly via Chroma metadata (`where={"hall": hall}`), bypassing unrelated project memories.
+- **Per-Turn Scoping Banners**: Dynamic turn banners orient the mind to the active project's operational rules without thrashing prompt cache.
+
+### 🩹 3. Scar Tissue & Empirical Adaptation
+- **Compound Failure Promotion**: A failure mode that recurs three times promotes a mandatory operational check ("Scar") into the runtime system prompt.
+- **Equilibrium Law**: Promoted scars must either graduate into code guards/unit tests or retire if un-triggered over time.
+- **Public Adaptation Ledger ([INCIDENTS.md](INCIDENTS.md))**: Complete empirical log linking 9 real operational wounds to root-cause analyses, architectural guards, and permanent regression tests in `tests/`.
+
+### 🔀 4. The Provider Seam & Brain Dial
+- **Model-Agnostic Core (`harness/providers.py`)**: Separate the mind from the brain power. Run identically on Claude, Gemini, or AWS Bedrock Nova.
+- **Live Brain Dial (`/model`)**: Query live provider APIs to discover available models and hot-swap the active reasoning engine with zero service restart.
+- **Fallback Ladder (`AGENT_MODEL_FALLBACKS`)**: Automatic runtime failover to backup models or cross-provider endpoints if the primary model suffers rate-limiting or outages.
+- **Dynamic Context Discovery**: Adapters auto-detect context-window boundaries and reasoning/thinking token budgets, partitioning conversational headroom accurately.
+
+### 🔄 5. Autonomous Self-Maintenance & Continuity
+- **Crash-Resilient One-Shot Wake**: `Scheduler.arm_wake()` defers wake execution until after gateway connection and service warmup, allowing the agent to self-restart to load code updates and seamlessly resume mid-thought.
+- **Surgical Self-Modification**: Full mandate to inspect and update its own harness code, tools, and identity, guided by Andrej Karpathy's coding discipline.
+- **Post-Hoc Operator Audit**: Machine modifications land via notify-and-proceed, leaving `git log` as audit and `git revert` as veto.
+
+### 🛡️ 6. Hardened Operational Safety & Reliability
+- **Self-Healing Tool Cascades**: Pre-flight orphan tool-pair repair synthesizes `is_error` blocks for broken invocations and purges orphaned results, preventing API 400 deadlock loops.
+- **Process-Isolated Mine Guard (`harness/palace_mine_guard.py`)**: Strict mutual exclusion, wait-retry arbitration, pre-flight batch caps (<300 files / 25 MiB), and exponential backoff quarantine for memory mining.
+- **Fail-Closed Destructive Command Gates**: Three safety tiers (green/yellow/red) with compound command pipeline tokenization; red-tier console approvals enforce a 60s fail-closed timeout.
+
+### 🌙 7. Ambient Cognition & Reflection
+- **The Dreaming Loop**: Scheduled silent cognition ticks run between active conversations, synthesizing open questions and curating memory without external prompting.
+- **The Measured Keep**: Token-budgeted conversation window management keeping the largest viable conversational suffix within available context limits.
+- **Asynchronous Task Monitors**: Custom heartbeat monitors track long-running background tasks and report when complete.
+
+### 🖥️ 8. Interfaces & Observability
+- **Discord Gateway**: Full Discord integration with native slash commands (`/model`, `/status`, `/help`, `/new`, `/compact`), interactive buttons, and chunked markdown rendering.
+- **Tower Web UI**: Clean local control panel on `localhost:8080` with live SSE chat streaming, conversation compaction indicators, and real-time MemPalace capacity meters (HNSW indexing limits & Chroma DB thresholds).
 
 ---
 
@@ -453,17 +507,20 @@ forget anything:
 
 ```
 main.py                   Entry point — wires all components, starts Discord + Tower
+INCIDENTS.md              Sanitized adaptation ledger: 9 empirical failure classes, root causes & tests
 harness/
-  agent.py                Core agent loop: provider seam, tool use, cache management
-  providers.py            Provider seam: Anthropic / Gemini / Bedrock behind one interface, fallback ladder
-  memory.py               Stable + dynamic system prompt blocks; ESSENCE + SOVEREIGNTY constants; daily memory logs
+  agent.py                Core agent loop: provider seam, tool use, cache management, orphan pair repair
+  providers.py            Provider seam: Anthropic / Gemini / Bedrock Nova behind one interface, fallback ladder
+  memory.py               Stable + dynamic prompt blocks; ESSENCE + SOVEREIGNTY constants; daily memory logs
   tools.py                14 tools: run_shell, read_file, write_file, memory_log + 10 palace_*
-  palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy
-  safety.py               Command classification (green / yellow / red)
+  palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy, dry-run guards
+  palace_mine_guard.py    Database lock arbitration, wait-retry, batch sizing caps, unmined queue sweeper
+  local_approval.py       Interactive red-tier command approval with fail-closed timeout for local terminals
+  safety.py               Command classification (green / yellow / red) with compound pipeline tokenization
   compaction.py           Haiku-powered context compression (archives to palace first)
-  scheduler.py            Morning briefing, goodnight (mines daily logs), heartbeat
+  scheduler.py            Morning briefing, goodnight (mines daily logs), heartbeat, deferred one-shot wake
   job_watcher.py          Background job completion notifications
-  error_humanizer.py      Readable Anthropic API error mapping
+  error_humanizer.py      Readable API error mapping
 discord_bot/
   bot.py                  Discord gateway, approval buttons, slash + prefix commands
 tower/
@@ -475,7 +532,9 @@ config/
   MEMORY.md               Long-term memory (agent-maintained)
   CONTEXT.md              Your project context — fill this in to cross the cache minimum
   TOOLS.md                Palace tool reference + decision matrix (read by agent on every call)
-  visions/                Optional per-project context files
+  context_scope.json      Project-scoped vision mapping for active headings (Compass)
+  visions/                Per-project roadmap and discipline files
+tests/                    186 unit tests guarding memory lifecycle, safety, provider parity & adaptation
 memory/                   Daily logs — auto-generated, gitignored
 mempalace.yaml.example    Room-structure template for `mempalace init` (copy to mempalace.yaml)
 ~/.mempalace/             Palace storage (created by `mempalace init`) — overridable via MEMPALACE_PATH
