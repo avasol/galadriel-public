@@ -6,8 +6,8 @@
 #
 # First boot, seed the memory palace once (otherwise palace_* tools report
 # "palace unavailable" until there is something to search):
-#   docker compose exec galadriel mempalace init
-#   docker compose exec galadriel mempalace mine    # optional: index your config/ + memory/
+#   docker compose exec galadriel mempalace init . --yes --no-llm
+#   docker compose exec galadriel mempalace mine .    # optional: index your config/ + memory/
 
 services:
   galadriel:
@@ -19,7 +19,7 @@ services:
       # SECURITY: the Tower UI has NO authentication. It is bound to localhost
       # only. Do NOT change this to "8080:8080" (which listens on 0.0.0.0) on a
       # public server — put an authenticated reverse proxy or SSH tunnel in front.
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${TOWER_EXTERNAL_PORT:-8080}:8080"
     volumes:
       - palace:/data                 # memory palace + archive (persists)
       - ./memory:/app/memory         # daily memory logs (visible on host)

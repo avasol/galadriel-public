@@ -441,7 +441,7 @@ cp .env.example .env
 
 # 4. (Optional but recommended) Seed the memory palace
 cp mempalace.yaml.example mempalace.yaml
-mempalace init              # creates ~/.mempalace/
+mempalace init . --yes      # creates ~/.mempalace/
 mempalace mine .            # indexes this repo into the palace
 
 # 5. Run
@@ -474,7 +474,7 @@ docker compose logs -f
 `[palace unavailable]` until there's something to search):
 
 ```bash
-docker compose exec galadriel mempalace init
+docker compose exec galadriel mempalace init . --yes --no-llm
 docker compose exec galadriel mempalace mine .   # optional: index the repo
 ```
 
