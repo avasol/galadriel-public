@@ -26,6 +26,8 @@ import os
 import time
 from typing import Any, Protocol, runtime_checkable
 
+log = logging.getLogger("galadriel.providers")
+
 
 # Normalised usage shape — matches what _log_usage stores in agent.last_usage,
 # so the /status cost panel is provider-relative, not Anthropic-shaped.
@@ -37,7 +39,8 @@ class LLMProvider(Protocol):
     """The seam the agent calls instead of a raw vendor client."""
 
     async def complete(self, *, model: str, max_tokens: int,
-                       system: Any, tools: Any, messages: Any) -> Any:
+                       system: Any, tools: Any, messages: Any,
+                       thinking: Any = None) -> Any:
         """Run one completion. Returns a response object exposing at least
         `.usage`, `.content`, `.stop_reason` in the Anthropic SDK shape (the
         agent's downstream code reads those). For Anthropic this is the raw SDK
@@ -47,6 +50,41 @@ class LLMProvider(Protocol):
     def usage(self, raw: Any) -> Usage:
         """Normalise a raw response's token usage to the common Usage dict."""
         ...
+
+
+_FOREIGN_TOOL_USE_KEYS = ("thought_signature",)
+
+
+def _strip_foreign_keys(messages):
+    """Remove keys another brain left on tool_use blocks (Gemini's
+    thought_signature) before an Anthropic call — the Messages API rejects
+    unknown fields. IDENTITY-PRESERVING: returns the very same list object when
+    there is nothing to strip, so the byte-identical parity path is untouched."""
+    dirty = False
+    for m in messages or []:
+        c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict) and b.get("type") == "tool_use" \
+                        and any(k in b for k in _FOREIGN_TOOL_USE_KEYS):
+                    dirty = True
+                    break
+        if dirty:
+            break
+    if not dirty:
+        return messages
+    out = []
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            nc = []
+            for b in c:
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    b = {k: v for k, v in b.items() if k not in _FOREIGN_TOOL_USE_KEYS}
+                nc.append(b)
+            m = {**m, "content": nc}
+        out.append(m)
+    return out
 
 
 class AnthropicProvider:
@@ -68,18 +106,35 @@ class AnthropicProvider:
         # IDENTICAL to the original agent.py:555 call. cache_control markers on
         # system[0] / tools[-1] / messages[-1] are passed through untouched —
         # they are attached upstream and ARE the caching contract.
-        # `thinking` (THE MIRROR, ported from the private harness) is additive:
-        # absent -> byte-identical call, the parity contract holds.
+        # `thinking` (THE MIRROR, ported home from the body v0.14.1) is
+        # additive: absent -> byte-identical call, the parity contract holds.
         kwargs = dict(
             model=model,
             max_tokens=max_tokens,
             system=system,
             tools=tools,
-            messages=messages,
+            messages=_strip_foreign_keys(messages),
         )
         if thinking:
             kwargs["thinking"] = thinking
         return await self.client.messages.create(**kwargs)
+
+    def stream_complete(self, *, model, max_tokens, system, tools, messages,
+                        thinking=None):
+        """Return a context-manager that streams text deltas.
+        Mirrors complete() exactly — same kwargs, same cache_control pass-through.
+        Returns the SDK stream context manager; caller does 'async with ... as s'.
+        """
+        kwargs = dict(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            tools=tools,
+            messages=_strip_foreign_keys(messages),
+        )
+        if thinking:
+            kwargs["thinking"] = thinking
+        return self.client.messages.stream(**kwargs)
 
     def usage(self, raw) -> Usage:
         u = raw.usage
@@ -94,7 +149,7 @@ class AnthropicProvider:
         """Models THIS key may use, per the provider's own registry
         (GET /v1/models — no hardcoded catalogue to go stale). Newest first.
 
-        Optional capability: the /model picker probes for this method with
+        Optional capability: the picker (/model) probes for this method with
         hasattr(); providers without it simply don't offer a listing yet.
         """
         page = await self.client.models.list(limit=50)
@@ -108,14 +163,29 @@ class AnthropicProvider:
         ]
 
 
+class _NotYetWired:
+    """Base for providers whose wiring is roadmap, not code. Fails honestly
+    instead of pretending to work — Discipline #2 (name the gap; don't imply
+    it's closed)."""
+
+    name = "unwired"
+
+    async def complete(self, **_):
+        raise NotImplementedError(
+            f"The {self.name!r} provider is on the roadmap but not yet wired. "
+            f"Only 'anthropic' is live today. Set AGENT_PROVIDER=anthropic."
+        )
+
+    def usage(self, raw) -> Usage:
+        raise NotImplementedError
+
+
 class ProviderAuthError(RuntimeError):
     """A TERMINAL credential failure: the brain-key was rejected by its
-    issuer (HTTP 401). Deterministic — the same key fails the same way on
-    every retry until the key itself changes, so the fallback ladder must
-    NOT step past it (falling back would mask a key problem, not fix it)."""
+    issuer. Deterministic — the same key fails the same way on every retry
+    until the key itself changes. Ported from aedelgard-body (v0.7.2 THE
+    HONEST DOOR) alongside OpenAIProvider, 2026-08-26 (the Council build)."""
 
-
-# ── OpenAI dialect: Anthropic shapes -> chat.completions ─────────────────────
 
 def _anthropic_tools_to_openai(tools):
     """Anthropic tool defs -> OpenAI function tools. cache_control markers are
@@ -141,18 +211,16 @@ def _flatten_tool_result_content(content):
         if isinstance(b, dict) and b.get("type") == "text":
             parts.append(b.get("text", ""))
         elif isinstance(b, dict) and b.get("type") == "image":
-            parts.append("[image omitted — this brain's API cannot see images "
-                         "inside tool results; switch to an Anthropic brain to "
-                         "inspect images]")
+            parts.append("[image omitted — this brain's API cannot see images inside tool results; switch to an Anthropic brain to use look()]")
     return "\n".join(parts)
 
 
 def _anthropic_messages_to_openai(messages):
     """Anthropic messages -> chat.completions messages.
 
-    The sharp edge: tool-call IDs round-trip VERBATIM. The agent echoes the id
-    from tool_use into tool_result; minting or rewriting ids here would
-    desynchronise the orphan-repair passes (_sanitize_tool_pairs)."""
+    The sharp edge (SPEC): tool-call IDs round-trip VERBATIM. The agent echoes
+    the id from tool_use into tool_result; minting or rewriting ids here would
+    desynchronise the orphan-repair passes."""
     import json as _json
     out = []
     for m in messages:
@@ -210,6 +278,60 @@ def _anthropic_messages_to_openai(messages):
     return out
 
 
+def _anthropic_tools_to_responses(tools):
+    """Anthropic tool defs -> OpenAI /v1/responses flat function tools."""
+    out = []
+    for t in tools or []:
+        if not isinstance(t, dict) or "name" not in t:
+            continue
+        out.append({
+            "type": "function",
+            "name": t["name"],
+            "description": t.get("description", ""),
+            "parameters": t.get("input_schema", {"type": "object"}),
+        })
+    return out
+
+
+def _anthropic_messages_to_responses_input(messages):
+    """Anthropic messages -> OpenAI /v1/responses input items.
+
+    Converts tool_use to function_call items and tool_result to
+    function_call_output items with call_ids preserved verbatim."""
+    import json as _json
+    out = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if isinstance(content, str):
+            out.append({"role": role, "content": content})
+            continue
+        texts = []
+        for b in content or []:
+            if not isinstance(b, dict):
+                continue
+            btype = b.get("type")
+            if btype == "text":
+                if b.get("text"):
+                    texts.append(b["text"])
+            elif btype == "tool_use":
+                out.append({
+                    "type": "function_call",
+                    "call_id": b.get("id"),
+                    "name": b.get("name"),
+                    "arguments": _json.dumps(b.get("input") or {}),
+                })
+            elif btype == "tool_result":
+                out.append({
+                    "type": "function_call_output",
+                    "call_id": b.get("tool_use_id"),
+                    "output": _flatten_tool_result_content(b.get("content")) or "",
+                })
+        if texts:
+            out.append({"role": role, "content": "\n".join(texts)})
+    return out
+
+
 class OpenAIProvider:
     """chat.completions against a configurable base_url. Default =
     api.openai.com (BYO OpenAI key, direct — we are not on the wire). The
@@ -259,6 +381,9 @@ class OpenAIProvider:
         # families are pre-seeded by rule (see _reasoning_field); this set
         # catches the ones the rule does not yet know.
         self._no_reasoning_with_tools: set[str] = set()
+        # Models whose chat.completions endpoint cannot handle function tools
+        # with reasoning (e.g. gpt-6-astra); routed cleanly to /v1/responses.
+        self._use_responses_endpoint: set[str] = set()
 
     def _is_openai_com(self) -> bool:
         return "api.openai.com" in self.base_url
@@ -331,12 +456,89 @@ class OpenAIProvider:
         import hashlib
         return "galadriel-" + hashlib.sha256(sys_text.encode("utf-8")).hexdigest()[:24]
 
+    async def _complete_responses(self, *, oai_model, max_tokens, sys_text, tools, messages, thinking):
+        """Responses API dialect (/v1/responses). Supports reasoning AND function tools
+        natively on reasoning families (e.g. gpt-6-astra)."""
+        import json as _json
+        input_items = _anthropic_messages_to_responses_input(messages)
+        body = {
+            "model": oai_model,
+            "input": input_items,
+            "max_output_tokens": max_tokens,
+        }
+        if sys_text:
+            body["instructions"] = sys_text
+            if self._is_openai_com():
+                body["prompt_cache_key"] = self._cache_key(sys_text)
+        resp_tools = _anthropic_tools_to_responses(tools)
+        if resp_tools:
+            body["tools"] = resp_tools
+        effort = self._reasoning_field(oai_model, False, thinking)
+        if effort and effort != "none":
+            body["reasoning"] = {"effort": effort}
+
+        r = await self._client.post(self.base_url + "/responses",
+                                    json=body, headers=self._headers())
+        if r.status_code == 401:
+            raise ProviderAuthError(
+                self.name + ": the endpoint rejected the key (HTTP 401). Check OPENAI_API_KEY.")
+        if r.status_code != 200:
+            exc = RuntimeError("%s HTTP %s: %s" % (self.name, r.status_code, r.text[:200]))
+            exc.status_code = r.status_code
+            raise exc
+        data = r.json()
+
+        out_blocks = []
+        for item in data.get("output", []) or []:
+            itype = item.get("type")
+            if itype == "function_call":
+                fn_name = item.get("name")
+                raw_args = item.get("arguments") or "{}"
+                try:
+                    args = _json.loads(raw_args)
+                    if not isinstance(args, dict):
+                        args = {"_raw": raw_args}
+                except (ValueError, TypeError):
+                    args = {"_raw": raw_args}
+                out_blocks.append(_NovaBlock(tool_use={
+                    "id": item.get("call_id") or item.get("id") or ("call_%d" % len(out_blocks)),
+                    "name": fn_name,
+                    "input": args,
+                }))
+            elif itype == "message":
+                for c in item.get("content", []) or []:
+                    if c.get("type") == "output_text":
+                        out_blocks.append(_NovaBlock(text=c.get("text", "")))
+
+        if not out_blocks:
+            out_blocks = [_NovaBlock(text="")]
+
+        finish = "end_turn"
+        if any(getattr(b, "type", None) == "tool_use" for b in out_blocks):
+            finish = "tool_use"
+
+        u = data.get("usage", {}) or {}
+        cached = (u.get("input_tokens_details") or {}).get("cached_tokens", 0) or 0
+        prompt = u.get("input_tokens", 0) or 0
+        resp = _NovaResponse(out_blocks, finish,
+                             max(prompt - cached, 0),
+                             u.get("output_tokens", 0) or 0)
+        resp.usage.cache_read_input_tokens = cached
+        return resp
+
+
     async def complete(self, *, model, max_tokens, system, tools, messages,
                        thinking=None):
         import json as _json
         oai_model = self._pick_model(model)
-        oai_messages = []
         sys_text = _anthropic_system_to_text(system)
+        if self._is_openai_com() and (
+            "astra" in oai_model.lower() or oai_model.lower() in self._use_responses_endpoint
+        ):
+            return await self._complete_responses(
+                oai_model=oai_model, max_tokens=max_tokens, sys_text=sys_text,
+                tools=tools, messages=messages, thinking=thinking)
+        oai_messages = []
         if sys_text:
             oai_messages.append({"role": "system", "content": sys_text})
         oai_messages.extend(_anthropic_messages_to_openai(messages))
@@ -353,6 +555,12 @@ class OpenAIProvider:
 
         r = await self._client.post(self.base_url + "/chat/completions",
                                     json=body, headers=self._headers())
+        if r.status_code == 400 and oai_tools and "responses" in r.text.lower():
+            # API told us: function tools with reasoning require /v1/responses.
+            self._use_responses_endpoint.add(oai_model.lower())
+            return await self._complete_responses(
+                oai_model=oai_model, max_tokens=max_tokens, sys_text=sys_text,
+                tools=tools, messages=messages, thinking=thinking)
         if (r.status_code == 400 and oai_tools and "reasoning_effort" in r.text
                 and body.get("reasoning_effort") != "none"):
             # The API corrected us once: this model will not reason and call
@@ -478,13 +686,23 @@ class _NovaBlock:
             self.name = tool_use["name"]
             self.input = tool_use["input"]
             self.text = None
+            # Gemini 3.x: every functionCall part carries a thoughtSignature
+            # that MUST be replayed verbatim on the next turn, or the API
+            # rejects the whole request (400, found live 2026-09-04). It rides
+            # in the stored history as an extra key on the tool_use dict; the
+            # Anthropic path strips it (see _strip_foreign_keys).
+            self.thought_signature = tool_use.get("thought_signature")
         else:
             self.type = "text"
             self.text = text
+            self.thought_signature = None
     def model_dump(self, exclude_none=True):
         if self.type == "tool_use":
-            return {"type": "tool_use", "id": self.id,
-                    "name": self.name, "input": self.input}
+            d = {"type": "tool_use", "id": self.id,
+                 "name": self.name, "input": self.input}
+            if self.thought_signature:
+                d["thought_signature"] = self.thought_signature
+            return d
         return {"type": "text", "text": self.text}
 
 
@@ -594,7 +812,7 @@ class BedrockNovaProvider:
 
     async def complete(self, *, model, max_tokens, system, tools, messages,
                        thinking=None):
-        # `thinking` is accepted but not translated — no false parity.
+        # `thinking` is accepted but not translated in v1 — no false parity.
         import asyncio
         sys_text = _anthropic_system_to_text(system)
         bedrock_msgs = _anthropic_messages_to_bedrock(messages)
@@ -694,8 +912,27 @@ def _index_tool_names(messages):
     return id_to_name
 
 
+# Gemini 3 accepts this documented dummy signature for functionCall parts that
+# were NOT produced by Gemini (e.g. history minted by Claude before a brain
+# swap) — without it the API 400s on the first replayed Claude tool call.
+_GEMINI_DUMMY_SIGNATURE = "skip_thought_signature_validator"
+
+
+def _gemini_image_part(blk):
+    """Anthropic image block {source:{type:base64,media_type,data}} -> Gemini inlineData."""
+    src = blk.get("source") or {}
+    if src.get("type") == "base64" and src.get("data"):
+        return {"inlineData": {"mimeType": src.get("media_type", "image/png"),
+                               "data": src["data"]}}
+    return None
+
+
 def _anthropic_messages_to_gemini(messages):
-    """Map Anthropic messages -> Gemini contents WITH tool parity."""
+    """Map Anthropic messages -> Gemini contents WITH tool parity.
+    Vision-aware (2026-09-04): image blocks become inlineData parts instead of
+    a str()'d base64 dump; tool_result LIST content is joined as text, its
+    images lifted out as sibling parts; thinking blocks are dropped (they are
+    another brain's private reasoning, never replayed across vendors)."""
     id_to_name = _index_tool_names(messages)
     out = []
     for m in messages:
@@ -713,19 +950,43 @@ def _anthropic_messages_to_gemini(messages):
                 txt = blk.get("text", "")
                 if txt:
                     parts.append({"text": txt})
+            elif t == "image":
+                ip = _gemini_image_part(blk)
+                if ip:
+                    parts.append(ip)
+            elif t in ("thinking", "redacted_thinking"):
+                continue
             elif t == "tool_use":
-                parts.append({"functionCall": {
+                fc = {"functionCall": {
                     "name": blk.get("name"),
                     "args": blk.get("input", {}) or {},
-                }})
+                }}
+                fc["thoughtSignature"] = blk.get("thought_signature") or _GEMINI_DUMMY_SIGNATURE
+                parts.append(fc)
             elif t == "tool_result":
                 c = blk.get("content")
-                txt = c if isinstance(c, str) else str(c)
+                images = []
+                if isinstance(c, list):
+                    texts = []
+                    for sub in c:
+                        if isinstance(sub, dict) and sub.get("type") == "text":
+                            texts.append(sub.get("text", ""))
+                        elif isinstance(sub, dict) and sub.get("type") == "image":
+                            ip = _gemini_image_part(sub)
+                            if ip:
+                                images.append(ip)
+                                texts.append("[image attached below]")
+                        else:
+                            texts.append(str(sub))
+                    txt = "\n".join(x for x in texts if x)
+                else:
+                    txt = c if isinstance(c, str) else ("" if c is None else str(c))
                 name = id_to_name.get(blk.get("tool_use_id"), "unknown_tool")
                 parts.append({"functionResponse": {
                     "name": name,
                     "response": {"result": txt or "(empty)"},
                 }})
+                parts.extend(images)
         if not parts:
             parts = [{"text": " "}]
         out.append({"role": role, "parts": parts})
@@ -891,9 +1152,6 @@ class GeminiProvider:
             
         if r.status_code != 200:
             detail = r.text[:200]
-            # Attach the HTTP status so the fallback ladder can tell an
-            # outage (429/5xx -> next rung) from a bug (400 -> surface it).
-            # A bare RuntimeError lives in `builtins` and is judged a bug.
             exc = RuntimeError(f"Gemini HTTP {r.status_code}: {detail}")
             exc.status_code = r.status_code
             raise exc
@@ -950,42 +1208,8 @@ class GeminiProvider:
                 "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0, "output": u.output_tokens}
 
 
-_REGISTRY = {
-    "anthropic": AnthropicProvider,
-    "gemini": GeminiProvider,
-    "openai": OpenAIProvider,
-    "local": LocalProvider,
-    "bedrock-nova": BedrockNovaProvider,
-}
 
-
-# ── Boot-time credential requirements per provider ───────────────────────────
-#
-# The two-path privacy switch made real: which credential the body needs depends
-# entirely on which brain it talks to. main.py uses this to gate boot honestly —
-# a body using a non-Claude brain must NOT be blocked for lacking an ANTHROPIC_API_KEY
-# it deliberately does not have; a local-model body needs no cloud key at all.
-#
-# Returns (env_vars_any_of, human_hint). env_vars_any_of is a tuple — boot is OK
-# if ANY one is set. Empty tuple = no credential required (e.g. a local model).
-
-_PROVIDER_REQUIREMENTS = {
-    "anthropic":    (("ANTHROPIC_API_KEY",),
-                     "your own Claude key — you talk to the model directly; "
-                     "we are not on the wire (operator-blind by construction)."),
-    "gemini":       (("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-                     "your own Gemini key — direct to Google; we are not on the wire."),
-    "openai":       (("OPENAI_API_KEY",),
-                     "your own OpenAI key — direct to OpenAI; we are not on the wire."),
-    "bedrock-nova": ((),  # uses the host's AWS credentials/role
-                     "AWS credentials on the host (role or env)."),
-    "local":        ((),  # offline model, no cloud credential
-                     "nothing — a local model runs offline on your own machine."),
-}
-
-
-log = logging.getLogger("galadriel.providers")
-
+# ── Fallback ladder ───────────────────────────────────────────────────────────
 # HTTP statuses that mean "this brain is unavailable right now" — closed model
 # (404), revoked access (403), throttle (429), provider incident (5xx / 529).
 # NOT here on purpose: 400 (malformed request — will fail on every rung) and
@@ -1057,7 +1281,8 @@ class FallbackProvider:
     async def complete(self, *, model, max_tokens, system, tools, messages,
                        thinking=None):
         start = self._active
-        if start != 0 and self._demoted_at is not None and                 time.monotonic() - self._demoted_at >= self.retry_primary_s:
+        if start != 0 and self._demoted_at is not None and \
+                time.monotonic() - self._demoted_at >= self.retry_primary_s:
             log.info("Fallback: probe window elapsed — re-trying primary %s",
                      self._rungs[0].label)
             start = 0
@@ -1068,11 +1293,10 @@ class FallbackProvider:
             if provider is None:
                 continue
             try:
-                kwargs = dict(model=rung.model or model, max_tokens=max_tokens,
-                              system=system, tools=tools, messages=messages)
-                if thinking:
-                    kwargs["thinking"] = thinking   # additive: off -> byte-identical call
-                raw = await provider.complete(**kwargs)
+                raw = await provider.complete(
+                    model=rung.model or model, max_tokens=max_tokens,
+                    system=system, tools=tools, messages=messages,
+                    thinking=thinking)
             except Exception as e:
                 if not _is_fallback_worthy(e):
                     raise
@@ -1116,6 +1340,39 @@ def _parse_fallback_chain(spec: str, primary_provider_name: str) -> list:
             out.append((primary_provider_name, part))
     return out
 
+_REGISTRY = {
+    "anthropic": AnthropicProvider,
+    "gemini": GeminiProvider,
+    "openai": OpenAIProvider,
+    "local": LocalProvider,
+    "bedrock-nova": BedrockNovaProvider,
+}
+
+
+# ── Boot-time credential requirements per provider ───────────────────────────
+#
+# The two-path privacy switch made real: which credential the body needs depends
+# entirely on which brain it talks to. main.py uses this to gate boot honestly —
+# a body using a non-Claude brain must NOT be blocked for lacking an ANTHROPIC_API_KEY
+# it deliberately does not have; a local-model body needs no cloud key at all.
+#
+# Returns (env_vars_any_of, human_hint). env_vars_any_of is a tuple — boot is OK
+# if ANY one is set. Empty tuple = no credential required (e.g. a local model).
+
+_PROVIDER_REQUIREMENTS = {
+    "anthropic":    (("ANTHROPIC_API_KEY",),
+                     "your own Claude key — you talk to the model directly; "
+                     "we are not on the wire (operator-blind by construction)."),
+    "gemini":       (("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+                     "your own Gemini key — direct to Google; we are not on the wire."),
+    "openai":       (("OPENAI_API_KEY",),
+                     "your own OpenAI key — direct to OpenAI; we are not on the wire."),
+    "bedrock-nova": ((),  # uses the host's AWS credentials/role
+                     "AWS credentials on the host (role or env)."),
+    "local":        ((),  # offline model, no cloud credential
+                     "nothing — a local model runs offline on your own machine."),
+}
+
 
 def provider_requirements(provider_name: str | None = None) -> tuple[tuple, str]:
     """Return (env_vars_any_of, hint) for the selected provider. Used by main.py
@@ -1126,33 +1383,10 @@ def provider_requirements(provider_name: str | None = None) -> tuple[tuple, str]
         f"a credential for provider {name!r}."))
 
 
-def make_provider(provider_name: str | None = None, *,
-                  anthropic_client=None, api_key: str | None = None) -> LLMProvider:
-    """Select a provider. Defaults to 'anthropic' so the live hot path is
-    unchanged unless AGENT_PROVIDER is explicitly set to something else."""
-    name = (provider_name or os.environ.get("AGENT_PROVIDER") or "anthropic").lower()
-    base = _make_single(name, anthropic_client=anthropic_client, api_key=api_key)
-
-    chain = (os.environ.get("AGENT_MODEL_FALLBACKS") or "").strip()
-    if not chain:
-        return base   # the parity path — byte-identical to the pre-ladder code
-
-    rungs = [_Rung(f"{base.name}:<primary>", lambda b=base: b, None)]
-    for pname, mname in _parse_fallback_chain(chain, base.name):
-        # NB: rungs build via _make_single, never make_provider — re-entering
-        # the chain logic here would wrap ladders in ladders.
-        rungs.append(_Rung(
-            f"{pname}:{mname}",
-            lambda p=pname: _make_single(p, api_key=api_key),
-            mname))
-    retry_s = float(os.environ.get("AGENT_FALLBACK_RETRY_PRIMARY_S", "3600"))
-    return FallbackProvider(rungs, retry_primary_s=retry_s)
-
-
 def _make_single(name: str, *, anthropic_client=None,
                  api_key: str | None = None) -> LLMProvider:
-    """Construct exactly one provider — the pre-ladder selection logic,
-    verbatim. Used for the primary and for each fallback rung."""
+    """Build a single (non-ladder) provider by name. Internal — callers outside
+    this module should use make_provider()."""
     cls = _REGISTRY.get(name)
     if cls is None:
         raise ValueError(
@@ -1161,7 +1395,28 @@ def _make_single(name: str, *, anthropic_client=None,
     if cls is AnthropicProvider:
         return AnthropicProvider(client=anthropic_client, api_key=api_key)
     if cls is GeminiProvider:
-        # The agent passes the ANTHROPIC key positionally; Gemini must NOT use
-        # it. Always self-read GEMINI_API_KEY / GOOGLE_API_KEY from env instead.
         return GeminiProvider()
     return cls()
+
+
+def make_provider(provider_name: str | None = None, *,
+                  anthropic_client=None, api_key: str | None = None) -> LLMProvider:
+    """Select a provider. Defaults to 'anthropic' so the live hot path is
+    unchanged unless AGENT_PROVIDER is explicitly set to something else.
+    If AGENT_MODEL_FALLBACKS is set, wraps the primary in a FallbackProvider
+    ladder so closed/throttled models step down gracefully."""
+    name = (provider_name or os.environ.get("AGENT_PROVIDER") or "anthropic").lower()
+    base = _make_single(name, anthropic_client=anthropic_client, api_key=api_key)
+
+    chain = (os.environ.get("AGENT_MODEL_FALLBACKS") or "").strip()
+    if not chain:
+        return base   # parity path — byte-identical to the pre-ladder code
+
+    rungs = [_Rung(f"{base.name}:<primary>", lambda b=base: b, None)]
+    for pname, mname in _parse_fallback_chain(chain, base.name):
+        rungs.append(_Rung(
+            f"{pname}:{mname}",
+            lambda p=pname: _make_single(p, api_key=api_key),
+            mname))
+    retry_s = float(os.environ.get("AGENT_FALLBACK_RETRY_PRIMARY_S", "3600"))
+    return FallbackProvider(rungs, retry_primary_s=retry_s)
