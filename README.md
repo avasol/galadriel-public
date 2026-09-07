@@ -101,8 +101,8 @@ The pieces that make this real, all already shipped:
 - **Self-modification discipline** baked into her identity — the
   [Karpathy coding principles](#baked-in-engineering-discipline-the-karpathy-principles)
   keep her self-edits surgical instead of sprawling.
-- **Model-agnostic by construction** — a provider seam lets her run on Claude, Gemini, or
-  Bedrock Nova interchangeably, hot-swap the live model through Discord's `/model` with
+- **Model-agnostic by construction** — a provider seam lets her run on Claude, Gemini,
+  OpenAI, Bedrock Nova or a local model interchangeably, hot-swap the live model through Discord's `/model` with
   zero downtime, and fall back automatically if the model she's on goes dark
   (see [Model-agnostic by construction](#model-agnostic-by-construction-the-provider-seam)).
 - **Empirical adaptation ledger** — a public record linking real operational
@@ -301,10 +301,11 @@ ones as superseded rather than guessing. A mind renamed `A → B → A` wakes up
 
 ## 💰 Economic Foundation: Multi-Provider Prompt Caching
 
-Every API call re-sends your system prompt — personality, memory files, tool schemas — at full price unless caching engages. When this project began in early 2026, prompt caching was a novelty; today, it is the fundamental economic baseline for running persistent personal agents affordably. Both brains this harness ships with discount a
+Every API call re-sends your system prompt — personality, memory files, tool schemas — at full price unless caching engages. When this project began in early 2026, prompt caching was a novelty; today, it is the fundamental economic baseline for running persistent personal agents affordably. Every cloud brain this harness ships with discounts a
 cached re-read by roughly 90%: Anthropic
 ([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching))
-and Google ([context caching](https://ai.google.dev/gemini-api/docs/caching)). On a
+Google ([context caching](https://ai.google.dev/gemini-api/docs/caching)) and OpenAI
+([prompt caching](https://platform.openai.com/docs/guides/prompt-caching)). On a
 long-running personal agent with a rich, mostly-stable prefix that is the difference
 between a background convenience and a real recurring cost, so Galadriel caches by
 default on **every provider that supports it** — the same soul and memory, cached the way
@@ -314,6 +315,7 @@ each vendor wants it. The provider seam decides the mechanism; you never touch i
 |---|---|---|---|
 | **Claude** | explicit `cache_control` breakpoints | three breakpoints: tools → stable block → trailing history | $0.30 instead of $3 (Sonnet-class) |
 | **Gemini** | explicit `cachedContents` + Google's implicit caching | stable block + tools become one cached object (1 h TTL, refreshed per turn); the dynamic block rides the first user message | $0.075 instead of $0.75 (3.8 Flash) |
+| **OpenAI** | automatic prefix caching (no markup) | system prompt first and byte-identical every turn; `prompt_cache_key` derived from the stable prefix pins the cache shard; `cached_tokens` reported as `cache_read` | $0.20 instead of $2 (gpt-5.6-terra); no billed cache write |
 
 The stable block alone — your SOUL.md, MEMORY.md, identity files — is typically 4 000–8 000 tokens. On a warm cache those tokens cost a tenth of a fresh read, on either brain: your biggest fixed overhead per call, reduced on every turn. Swap brains with `/model` and the very next call pays one cold write on the new vendor, then it's cheap again — the mind travels; the cache is rebuilt behind it.
 
@@ -399,7 +401,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Public Adaptation Ledger ([INCIDENTS.md](INCIDENTS.md))**: Complete empirical log linking 9 real operational wounds to root-cause analyses, architectural guards, and permanent regression tests in `tests/`.
 
 ### 🔀 4. The Provider Seam & Brain Dial
-- **Model-Agnostic Core (`harness/providers.py`)**: Separate the mind from the brain power. Run identically on Claude, Gemini, or AWS Bedrock Nova.
+- **Model-Agnostic Core (`harness/providers.py`)**: Separate the mind from the brain power. Run identically on Claude, Gemini, OpenAI (and any OpenAI-compatible endpoint), AWS Bedrock Nova, or a keyless local model.
 - **Live Brain Dial (`/model`)**: Query live provider APIs to discover available models and hot-swap the active reasoning engine with zero service restart.
 - **Fallback Ladder (`AGENT_MODEL_FALLBACKS`)**: Automatic runtime failover to backup models or cross-provider endpoints if the primary model suffers rate-limiting or outages.
 - **Dynamic Context Discovery**: Adapters auto-detect context-window boundaries and reasoning/thinking token budgets, partitioning conversational headroom accurately.
@@ -510,7 +512,7 @@ main.py                   Entry point — wires all components, starts Discord +
 INCIDENTS.md              Sanitized adaptation ledger: 9 empirical failure classes, root causes & tests
 harness/
   agent.py                Core agent loop: provider seam, tool use, cache management, orphan pair repair
-  providers.py            Provider seam: Anthropic / Gemini / Bedrock Nova behind one interface, fallback ladder
+  providers.py            Provider seam: Anthropic / Gemini / OpenAI / local / Bedrock Nova behind one interface, fallback ladder
   memory.py               Stable + dynamic prompt blocks; ESSENCE + SOVEREIGNTY constants; daily memory logs
   tools.py                14 tools: run_shell, read_file, write_file, memory_log + 10 palace_*
   palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy, dry-run guards
@@ -534,7 +536,7 @@ config/
   TOOLS.md                Palace tool reference + decision matrix (read by agent on every call)
   context_scope.json      Project-scoped vision mapping for active headings (Compass)
   visions/                Per-project roadmap and discipline files
-tests/                    186 unit tests guarding memory lifecycle, safety, provider parity & adaptation
+tests/                    217 unit tests guarding memory lifecycle, safety, provider parity & adaptation
 memory/                   Daily logs — auto-generated, gitignored
 mempalace.yaml.example    Room-structure template for `mempalace init` (copy to mempalace.yaml)
 ~/.mempalace/             Palace storage (created by `mempalace init`) — overridable via MEMPALACE_PATH
@@ -545,12 +547,31 @@ mempalace.yaml.example    Room-structure template for `mempalace init` (copy to 
 ## Model-agnostic by construction: the provider seam
 
 The repo's thesis is "separate the mind from the brain power." `harness/providers.py` is
-that promise in code: one `LLMProvider` interface, five implementations (Anthropic, Gemini,
-OpenAI, Bedrock Nova, local/offline), and a byte-identical parity test guarding the default
-path. Prompt caching rides the seam too — the Anthropic and Gemini paths each cache the
-stable prefix in their vendor's own dialect. The memory —
+that promise in code: one `LLMProvider` interface, five live implementations (Anthropic,
+Gemini, OpenAI, Bedrock Nova, local/offline), and a byte-identical parity test guarding the
+default path. Prompt caching rides the seam too — the Anthropic, Gemini and OpenAI paths
+each cache the stable prefix in their vendor's own dialect. The memory —
 palace, knowledge graph, SOUL.md, the daily logs — never touches provider-specific format,
 so it survives every swap untouched.
+
+| Brain | `AGENT_PROVIDER` | Key | Tools | Caching | Thinking |
+|---|---|---|---|---|---|
+| Claude | `anthropic` | `ANTHROPIC_API_KEY` | full | explicit breakpoints | extended thinking, per-model dialect learned live |
+| Gemini | `gemini` | `GEMINI_API_KEY` | full | explicit `cachedContents` + implicit | `thinkingBudget` (2.5+; mandatory-thinking models learned live) |
+| OpenAI | `openai` | `OPENAI_API_KEY` | full | automatic (≥1024-token prefix) + `prompt_cache_key` pinning | `reasoning_effort` on tool-less turns only — see the honest note below |
+| Bedrock Nova | `bedrock-nova` | host AWS credentials | full | — | — |
+| Local (Ollama / LM Studio / vLLM) | `local` | none | full | n/a (context is free) | server-dependent |
+
+**The honest note on OpenAI.** The provider speaks `/v1/chat/completions`, and on the
+current reasoning families (gpt-5.x, gpt-6, o-series) that endpoint refuses to reason and
+call function tools in the same request — verified live, the API 400s unless
+`reasoning_effort` is explicitly `none`. So a tool turn runs with reasoning off and a
+tool-less turn translates the agent's thinking budget into `low` / `medium` / `high`.
+The provider also learns this per model from the API's own error, so an id the table has
+never heard of corrects itself on the first turn. Reasoning *with* tools lives on the
+Responses API, a different dialect not yet wired — named here rather than implied closed.
+Images inside tool results are not visible to this brain either (the block is replaced by
+a plain-text note); the Anthropic path sees them.
 
 - **`/model`** (Discord slash command) — lists every model the *live key* can actually see
   (via the provider's own model-listing call, not a hardcoded table), lets you pick one, and
@@ -931,7 +952,28 @@ The Tower UI panel shows two live capacity meters — HNSW % of practical limit 
 
 ## Release Notes
 
-*Note on versioning: Early repository tags (`v0.1.0` – `v0.3.0`) tracked initial desktop body and narrative packaging milestones, while release notes document harness iterations (1.1 through 1.25). Git tags and release milestones are now aligned.*
+*Note on versioning: Early repository tags (`v0.1.0` – `v0.3.0`) tracked initial desktop body and narrative packaging milestones, while release notes document harness iterations (1.1 through 1.26). Git tags and release milestones are now aligned.*
+
+### 1.26 / v1.26.0 — THE THIRD BRAIN: OpenAI live on the seam, and the ladder carries thinking
+
+- **OpenAI provider wired** (`harness/providers.py`): `/v1/chat/completions` with full
+  tool-call round-tripping (ids verbatim — the orphan-repair passes depend on it), automatic
+  prompt caching credited honestly (`cached_tokens` → `cache_read`, input reported net of the
+  cached share, no billed write), `prompt_cache_key` pinned to the stable prefix, `/model`
+  listing filtered to chat-capable ids, caller-named OpenAI models honoured (so the dial and
+  fallback rungs work), `reasoning_effort` gated to reasoning families — and the live finding
+  that chat.completions will not reason and call tools in one request, handled by rule for
+  known families and learned per model from the API's own 400 for unknown ones. Proven live:
+  a full tool cascade on `gpt-5.6-luna` wearing the soul, cache warm from turn two.
+- **Local brain wired** as a subclass of the same dialect: Ollama / LM Studio / vLLM,
+  keyless, `LOCAL_MODEL` + `LOCAL_BASE_URL`.
+- **Fallback ladder regression fixed** (`INCIDENTS.md` INC-010): once the agent began passing
+  `thinking=` to the seam, `FallbackProvider.complete()` — which did not accept it — raised
+  `TypeError` on every call for anyone with `AGENT_MODEL_FALLBACKS` set. The ladder now
+  accepts and forwards it (additively: thinking off → byte-identical call). Bedrock accepts
+  it too (ignored, no false parity). Regression test added.
+- Static context windows for the OpenAI families (their `/v1/models` carries no window field).
+- `tests/test_openai_provider.py`: 31 offline contract tests. 217 green.
 
 ### 1.25 / v1.25.0 — The Sanitized Adaptation Ledger & Safety Hardening
 

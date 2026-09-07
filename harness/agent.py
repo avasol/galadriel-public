@@ -71,6 +71,19 @@ CONTEXT_WINDOW_OVERRIDES = {
     "gemini-2.5-flash":       1_048_576,
     "gemini-flash-latest":    1_048_576,
     "gemini-pro-latest":      1_048_576,
+    # OpenAI: GET /v1/models carries no context-window field, so there is
+    # nothing to discover live — this static table is the only source.
+    # Figures from the vendor's model pages as of 2026-09-07.
+    "gpt-6-astra":            1_050_000,
+    "gpt-5.6-sol":            1_050_000,
+    "gpt-5.6-terra":          1_050_000,
+    "gpt-5.6-luna":           1_050_000,
+    "gpt-4.1":                1_047_576,
+    "gpt-4.1-mini":           1_047_576,
+    "gpt-4o":                   128_000,
+    "gpt-4o-mini":              128_000,
+    "o3":                       200_000,
+    "o4-mini":                  200_000,
 }
 
 # Populated at first agent init from client.models.list(). Falls back to
@@ -88,7 +101,9 @@ def _run_model_discovery(api_key: str) -> None:
     default. Sources, each optional and swallowed on failure:
       1. Anthropic  models.list() -> max_input_tokens   (if a Claude key is set)
       2. Gemini     /v1beta/models -> inputTokenLimit   (if a Gemini key is set)
-    Whatever is left falls to CONTEXT_WINDOW_OVERRIDES / the default."""
+    OpenAI's /v1/models exposes no window size, so that brain relies on the
+    static table. Whatever is left falls to CONTEXT_WINDOW_OVERRIDES / the
+    default."""
     global _DISCOVERED_CONTEXT_WINDOWS, _DISCOVERY_DONE
     if _DISCOVERY_DONE:
         return

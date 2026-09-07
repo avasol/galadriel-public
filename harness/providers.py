@@ -108,32 +108,362 @@ class AnthropicProvider:
         ]
 
 
-class _NotYetWired:
-    """Base for providers whose wiring is roadmap, not code. Fails honestly
-    instead of pretending to work — Discipline #2 (name the gap; don't imply
-    it's closed)."""
+class ProviderAuthError(RuntimeError):
+    """A TERMINAL credential failure: the brain-key was rejected by its
+    issuer (HTTP 401). Deterministic — the same key fails the same way on
+    every retry until the key itself changes, so the fallback ladder must
+    NOT step past it (falling back would mask a key problem, not fix it)."""
 
-    name = "unwired"
 
-    async def complete(self, **_):
-        raise NotImplementedError(
-            f"The {self.name!r} provider is on the roadmap but not yet wired. "
-            f"Only 'anthropic' is live today. Set AGENT_PROVIDER=anthropic."
-        )
+# ── OpenAI dialect: Anthropic shapes -> chat.completions ─────────────────────
+
+def _anthropic_tools_to_openai(tools):
+    """Anthropic tool defs -> OpenAI function tools. cache_control markers are
+    an Anthropic caching contract and are stripped here."""
+    out = []
+    for t in tools or []:
+        if not isinstance(t, dict) or "name" not in t:
+            continue
+        out.append({"type": "function", "function": {
+            "name": t["name"],
+            "description": t.get("description", ""),
+            "parameters": t.get("input_schema", {"type": "object"}),
+        }})
+    return out
+
+
+def _flatten_tool_result_content(content):
+    """tool_result content (str | [blocks]) -> plain text for a 'tool' message."""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for b in content or []:
+        if isinstance(b, dict) and b.get("type") == "text":
+            parts.append(b.get("text", ""))
+        elif isinstance(b, dict) and b.get("type") == "image":
+            parts.append("[image omitted — this brain's API cannot see images "
+                         "inside tool results; switch to an Anthropic brain to "
+                         "inspect images]")
+    return "\n".join(parts)
+
+
+def _anthropic_messages_to_openai(messages):
+    """Anthropic messages -> chat.completions messages.
+
+    The sharp edge: tool-call IDs round-trip VERBATIM. The agent echoes the id
+    from tool_use into tool_result; minting or rewriting ids here would
+    desynchronise the orphan-repair passes (_sanitize_tool_pairs)."""
+    import json as _json
+    out = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if isinstance(content, str):
+            out.append({"role": role, "content": content})
+            continue
+        texts, images, tool_calls, tool_msgs = [], [], [], []
+        for b in content or []:
+            if not isinstance(b, dict):
+                continue
+            btype = b.get("type")
+            if btype == "text":
+                if b.get("text"):
+                    texts.append(b["text"])
+            elif btype == "tool_use":
+                tool_calls.append({
+                    "id": b.get("id"),
+                    "type": "function",
+                    "function": {"name": b.get("name"),
+                                 "arguments": _json.dumps(b.get("input") or {})},
+                })
+            elif btype == "tool_result":
+                tool_msgs.append({
+                    "role": "tool",
+                    "tool_call_id": b.get("tool_use_id"),
+                    "content": _flatten_tool_result_content(b.get("content")) or "",
+                })
+            elif btype == "image":
+                src = b.get("source", {}) or {}
+                if src.get("type") == "base64":
+                    images.append({
+                        "type": "image_url",
+                        "image_url": {"url": "data:%s;base64,%s" % (
+                            src.get("media_type", "image/png"),
+                            src.get("data", ""))},
+                    })
+        if role == "assistant":
+            msg = {"role": "assistant",
+                   "content": "\n".join(texts) if texts else None}
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
+            if msg["content"] is not None or tool_calls:
+                out.append(msg)
+        else:
+            # user turn: tool results answer the assistant's preceding
+            # tool_calls, so they go FIRST as their own 'tool' messages.
+            out.extend(tool_msgs)
+            if images:
+                parts = [{"type": "text", "text": t} for t in texts]
+                out.append({"role": "user", "content": parts + images})
+            elif texts:
+                out.append({"role": "user", "content": "\n".join(texts)})
+    return out
+
+
+class OpenAIProvider:
+    """chat.completions against a configurable base_url. Default =
+    api.openai.com (BYO OpenAI key, direct — we are not on the wire). The
+    same class speaks to the whole OpenAI-compatible ecosystem (Groq,
+    OpenRouter, DeepSeek, vLLM, Ollama) via OPENAI_BASE_URL — see
+    LocalProvider for the keyless offline case.
+
+    Caching on this brain is AUTOMATIC: OpenAI caches any identical prompt
+    prefix >= 1024 tokens with no markup; cached tokens are billed as read
+    hits and there is no cache-write charge. Two things the seam does to
+    make hits likely: the system prompt (soul + memory) always goes first and
+    byte-identical, and `prompt_cache_key` pins a stable routing key derived
+    from that prefix so consecutive turns land on the same cache shard."""
+
+    name = "openai"
+    _default_base = "https://api.openai.com/v1"
+
+    # Model ids this brain will honour when the CALLER names one (the /model
+    # dial, a fallback rung, a cross-provider pick). Anything else — e.g. the
+    # agent's Anthropic default id — falls back to default_model.
+    _OWN_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4", "chatgpt-")
+    # reasoning_effort is accepted only by reasoning-capable families on
+    # api.openai.com; other models and compatible servers 400 on the field.
+    _REASONING_MODEL_PREFIXES = ("o1", "o3", "o4", "gpt-5", "gpt-6")
+
+    def __init__(self, *, api_key: str | None = None,
+                 base_url: str | None = None, model: str | None = None):
+        import httpx
+        self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL")
+                         or self._default_base).rstrip("/")
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or ""
+        if not self.api_key and self._is_openai_com():
+            raise RuntimeError(
+                "OpenAIProvider needs OPENAI_API_KEY. Or set AGENT_PROVIDER "
+                "to another brain."
+            )
+        self.default_model = model or os.environ.get("OPENAI_MODEL") or (
+            "gpt-4o-mini" if self._is_openai_com() else "")
+        if not self.default_model:
+            raise RuntimeError(
+                "No model named for endpoint %s — set OPENAI_MODEL to the "
+                "model tag your server hosts." % self.base_url)
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(630.0, connect=10.0))
+        # Learned per model, from the API's own 400: ids whose chat.completions
+        # dialect refuses reasoning + function tools together. The known
+        # families are pre-seeded by rule (see _reasoning_field); this set
+        # catches the ones the rule does not yet know.
+        self._no_reasoning_with_tools: set[str] = set()
+
+    def _is_openai_com(self) -> bool:
+        return "api.openai.com" in self.base_url
+
+    def _headers(self):
+        h = {"Content-Type": "application/json"}
+        if self.api_key:
+            h["Authorization"] = "Bearer " + self.api_key
+        return h
+
+    def _max_tokens_param(self):
+        # api.openai.com's newer models demand max_completion_tokens; the
+        # wider compatible ecosystem (Ollama, Groq, OpenRouter, ...) speaks
+        # the original max_tokens. Choose by endpoint, not by hope.
+        return "max_completion_tokens" if self._is_openai_com() else "max_tokens"
+
+    def _pick_model(self, requested: str | None) -> str:
+        """Honour a caller-named model when it is one of ours (so the /model
+        dial and fallback rungs work); otherwise use the configured default."""
+        r = (requested or "").lower()
+        if r and (not self._is_openai_com()
+                  or r.startswith(self._OWN_MODEL_PREFIXES)):
+            return requested
+        return self.default_model
+
+    def _supports_reasoning_effort(self, model: str | None = None) -> bool:
+        if not self._is_openai_com():
+            return False
+        m = (model or self.default_model or "").lower()
+        return m.startswith(self._REASONING_MODEL_PREFIXES)
+
+    def _reasoning_field(self, model: str, has_tools: bool, thinking) -> str | None:
+        """What to put in `reasoning_effort`, if anything.
+
+        Live finding (2026-09-07, api.openai.com): on the current reasoning
+        families, /v1/chat/completions REFUSES function tools unless
+        reasoning_effort is explicitly "none" — even the default (field
+        absent) is a 400. Reasoning *with* tools lives on /v1/responses, a
+        different dialect this provider does not yet speak. So: tools present
+        -> "none" (the cascade works, no hidden reasoning); no tools ->
+        translate the agent's thinking budget into a tier. No false parity:
+        a Claude-style thinking budget is honoured here only on tool-less
+        turns, and that limitation is named in the README."""
+        if has_tools and model.lower() in self._no_reasoning_with_tools:
+            return "none"          # learned from this model's own 400
+        if not self._supports_reasoning_effort(model):
+            return None
+        if has_tools:
+            return "none"          # known reasoning family: rule, not guess
+        if thinking:
+            budget = thinking.get("budget_tokens") if isinstance(thinking, dict) else None
+            return self._effort_from_budget(budget)
+        return None
+
+    @staticmethod
+    def _effort_from_budget(budget_tokens) -> str | None:
+        """Translate the agent's continuous thinking budget (Claude/Gemini
+        dialect) into OpenAI's discrete tiers. No budget -> no opinion (let
+        the model default)."""
+        if not budget_tokens:
+            return None
+        if budget_tokens <= 2048:
+            return "low"
+        if budget_tokens <= 8192:
+            return "medium"
+        return "high"
+
+    @staticmethod
+    def _cache_key(sys_text: str) -> str:
+        import hashlib
+        return "galadriel-" + hashlib.sha256(sys_text.encode("utf-8")).hexdigest()[:24]
+
+    async def complete(self, *, model, max_tokens, system, tools, messages,
+                       thinking=None):
+        import json as _json
+        oai_model = self._pick_model(model)
+        oai_messages = []
+        sys_text = _anthropic_system_to_text(system)
+        if sys_text:
+            oai_messages.append({"role": "system", "content": sys_text})
+        oai_messages.extend(_anthropic_messages_to_openai(messages))
+        body = {"model": oai_model, "messages": oai_messages,
+                self._max_tokens_param(): max_tokens}
+        oai_tools = _anthropic_tools_to_openai(tools)
+        if oai_tools:
+            body["tools"] = oai_tools
+        effort = self._reasoning_field(oai_model, bool(oai_tools), thinking)
+        if effort:
+            body["reasoning_effort"] = effort
+        if sys_text and self._is_openai_com():
+            body["prompt_cache_key"] = self._cache_key(sys_text)
+
+        r = await self._client.post(self.base_url + "/chat/completions",
+                                    json=body, headers=self._headers())
+        if (r.status_code == 400 and oai_tools and "reasoning_effort" in r.text
+                and body.get("reasoning_effort") != "none"):
+            # The API corrected us once: this model will not reason and call
+            # tools in the same chat.completions request. Remember, retry.
+            self._no_reasoning_with_tools.add(oai_model.lower())
+            body["reasoning_effort"] = "none"
+            r = await self._client.post(self.base_url + "/chat/completions",
+                                        json=body, headers=self._headers())
+        if r.status_code == 401:
+            # TERMINAL: the key is provably dead — not a rung to step past.
+            raise ProviderAuthError(
+                self.name + ": the endpoint rejected the key (HTTP 401). "
+                "Check OPENAI_API_KEY.")
+        if r.status_code != 200:
+            exc = RuntimeError("%s HTTP %s: %s" % (
+                self.name, r.status_code, r.text[:200]))
+            exc.status_code = r.status_code   # feeds _is_fallback_worthy
+            raise exc
+        data = r.json()
+
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message", {}) or {}
+        out_blocks = []
+        if msg.get("content"):
+            out_blocks.append(_NovaBlock(text=msg["content"]))
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function", {}) or {}
+            try:
+                args = _json.loads(fn.get("arguments") or "{}")
+                if not isinstance(args, dict):
+                    args = {"_raw": fn.get("arguments")}
+            except (ValueError, TypeError):
+                # Compatible servers sometimes emit broken argument JSON. The
+                # cascade degrades to an is_error tool result; it must not
+                # die here.
+                args = {"_raw": fn.get("arguments")}
+            out_blocks.append(_NovaBlock(tool_use={
+                "id": tc.get("id") or "oai_call_%d" % len(out_blocks),
+                "name": fn.get("name"), "input": args}))
+        if not out_blocks:
+            out_blocks = [_NovaBlock(text="")]
+
+        finish = {"tool_calls": "tool_use", "length": "max_tokens"}.get(
+            choice.get("finish_reason"), "end_turn")
+        if any(getattr(b, "type", None) == "tool_use" for b in out_blocks):
+            finish = "tool_use"
+
+        u = data.get("usage", {}) or {}
+        cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
+        prompt = u.get("prompt_tokens", 0) or 0
+        # Honest accounting: OpenAI's prompt_tokens INCLUDES the cached share.
+        # Report uncached input + cache_read separately, the way the Anthropic
+        # path does, so /status and the cost panel compare like with like.
+        resp = _NovaResponse(out_blocks, finish,
+                             max(prompt - cached, 0),
+                             u.get("completion_tokens", 0) or 0)
+        resp.usage.cache_read_input_tokens = cached
+        return resp
 
     def usage(self, raw) -> Usage:
-        raise NotImplementedError
+        u = raw.usage
+        return {"input": u.input_tokens,
+                "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
+                "cache_write": 0,   # automatic caching: no billed write
+                "output": u.output_tokens}
+
+    async def list_models(self) -> list[dict]:
+        """Models THIS key may use, per GET /v1/models — powers the /model
+        dial. On api.openai.com the catalogue is filtered to chat-capable
+        families (embeddings, audio, image and moderation ids are not brains);
+        compatible servers return whatever they host, unfiltered."""
+        r = await self._client.get(self.base_url + "/models", headers=self._headers())
+        if r.status_code == 401:
+            raise ProviderAuthError(self.name + ": the endpoint rejected the key (HTTP 401).")
+        r.raise_for_status()
+        data = r.json().get("data", []) or []
+        out = []
+        for m in data:
+            mid = m.get("id") or ""
+            if not mid:
+                continue
+            if self._is_openai_com():
+                low = mid.lower()
+                if not low.startswith(self._OWN_MODEL_PREFIXES):
+                    continue
+                if any(x in low for x in ("embedding", "audio", "realtime", "tts",
+                                          "transcribe", "image", "moderation",
+                                          "search", "instruct")):
+                    continue
+            out.append({"id": mid,
+                        "display_name": mid,
+                        "created_at": str(m.get("created") or "")})
+        out.sort(key=lambda x: x["created_at"], reverse=True)
+        return out
 
 
-class OpenAIProvider(_NotYetWired):
-    """chat.completions; automatic prompt caching. Roadmap."""
-    name = "openai"
+class LocalProvider(OpenAIProvider):
+    """The keyless local brain: Ollama / LM Studio / vLLM / llama.cpp on your
+    own machine via their OpenAI-compatible endpoint. No cloud credential, no
+    per-token rent — and operator-blind in the absolute sense: the prompts
+    never leave the hardware. Point OPENAI_BASE_URL at the server (default
+    Ollama) and name the hosted tag in LOCAL_MODEL or OPENAI_MODEL."""
 
-
-class LocalProvider(_NotYetWired):
-    """Ollama / llama.cpp OpenAI-compatible. mark_cache is a no-op (context is
-    free). The body's killer offline case. Roadmap."""
     name = "local"
+    _default_base = "http://localhost:11434/v1"
+
+    def __init__(self, *, api_key=None, base_url=None, model=None):
+        super().__init__(
+            api_key=api_key or os.environ.get("OPENAI_API_KEY") or "local",
+            base_url=base_url or os.environ.get("LOCAL_BASE_URL"),
+            model=model or os.environ.get("LOCAL_MODEL"))
 
 
 class _NovaBlock:
@@ -262,7 +592,9 @@ class BedrockNovaProvider:
         self.region = region or os.environ.get("AWS_REGION", "eu-north-1")
         self.client = boto3.client("bedrock-runtime", region_name=self.region)
 
-    async def complete(self, *, model, max_tokens, system, tools, messages):
+    async def complete(self, *, model, max_tokens, system, tools, messages,
+                       thinking=None):
+        # `thinking` is accepted but not translated — no false parity.
         import asyncio
         sys_text = _anthropic_system_to_text(system)
         bedrock_msgs = _anthropic_messages_to_bedrock(messages)
@@ -722,7 +1054,8 @@ class FallbackProvider:
     def active_label(self) -> str:
         return self._rungs[self._active].label
 
-    async def complete(self, *, model, max_tokens, system, tools, messages):
+    async def complete(self, *, model, max_tokens, system, tools, messages,
+                       thinking=None):
         start = self._active
         if start != 0 and self._demoted_at is not None and                 time.monotonic() - self._demoted_at >= self.retry_primary_s:
             log.info("Fallback: probe window elapsed — re-trying primary %s",
@@ -735,9 +1068,11 @@ class FallbackProvider:
             if provider is None:
                 continue
             try:
-                raw = await provider.complete(
-                    model=rung.model or model, max_tokens=max_tokens,
-                    system=system, tools=tools, messages=messages)
+                kwargs = dict(model=rung.model or model, max_tokens=max_tokens,
+                              system=system, tools=tools, messages=messages)
+                if thinking:
+                    kwargs["thinking"] = thinking   # additive: off -> byte-identical call
+                raw = await provider.complete(**kwargs)
             except Exception as e:
                 if not _is_fallback_worthy(e):
                     raise

@@ -27,6 +27,7 @@ This document serves as the verifiable ledger linking observed failure patterns 
 | **INC-007** | Thinking Model Context Window Truncation | 2026-09-06 | Provider seam dynamic context discovery | `tests/test_context_window_discovery.py` | Verified active |
 | **INC-008** | Routine History Trim Asymmetry | 2026-06-20 | Token-budgeted trim + pre-drop palace archival | `tests/test_measured_keep.py`, `tests/test_unbroken_thread.py` | Verified active |
 | **INC-009** | Restart Race Condition & Wake Stranding | 2026-07-15 | Deferred wake arming surviving process cycles | `tests/test_wake_defer.py` | Verified active |
+| **INC-010** | Fallback Ladder Rejected `thinking=` (TypeError on every call) | 2026-09-07 | Ladder accepts/forwards `thinking` additively; all providers accept the kwarg | `tests/test_openai_provider.py::test_fallback_ladder_accepts_and_forwards_thinking` | Verified active |
 
 ---
 
@@ -96,6 +97,12 @@ This document serves as the verifiable ledger linking observed failure patterns 
 - **Root Cause:** Wake triggers executing in-process prior to service supervisor lifecycle completion.
 - **Harness Adaptation:** Implemented persistent deferred wake arming in `harness/scheduler.py`: one-shot wake prompts persist to disk (`scheduler_state.json`) and execute exclusively after gateway connection and service warmup on the subsequent boot.
 - **Verification:** `tests/test_wake_defer.py`.
+
+### INC-010: Fallback Ladder Rejected `thinking=`
+- **Wound:** When extended thinking was added to the agent's single model call site, the call began passing `thinking=` to whatever provider sat behind the seam. The direct providers accepted it; `FallbackProvider.complete()` did not. Any deployment with `AGENT_MODEL_FALLBACKS` set therefore raised `TypeError: unexpected keyword argument 'thinking'` on **every** call — the ladder that exists to keep the agent up was the thing taking it down. Found during the OpenAI wiring, by reading the signatures side by side; reproduced in one line.
+- **Root Cause:** A protocol widened at the call site without every implementer of the protocol being widened with it — the seam's interface (`LLMProvider.complete`) still documented the narrower signature, so the parity tests had nothing to fail against.
+- **Harness Adaptation:** `FallbackProvider.complete()` and `BedrockNovaProvider.complete()` accept `thinking`; the ladder forwards it **additively** (omitted when falsy, so the thinking-off path stays byte-identical to the pre-ladder call). The fake providers in the ladder's own tests were widened to match the real contract.
+- **Verification:** `test_fallback_ladder_accepts_and_forwards_thinking` (new) plus the existing `tests/test_fallback_provider.py` suite.
 
 ---
 

@@ -40,7 +40,8 @@ class _FakeProvider:
         self.errors = list(errors or [])
         self.calls = []          # (model,) per call
 
-    async def complete(self, *, model, max_tokens, system, tools, messages):
+    async def complete(self, *, model, max_tokens, system, tools, messages,
+                       thinking=None):
         self.calls.append(model)
         if self.errors:
             raise self.errors.pop(0)
