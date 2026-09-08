@@ -57,13 +57,22 @@ and repeat it here because it is the truth your threat model should assume:
   with a **local model** does plaintext never leave the machine at all. The
   "not as policy, but as physics" claim is true of *our* blindness in every body
   mode, and of *everyone's* blindness only in local-model mode.
-- **The hosted cloud broker** is **operator-blind at rest, but not in-flight.**
-  Memory and model keys are envelope-encrypted at rest and per-tenant isolated,
-  but during a request the broker decrypts what it needs *in memory* to run
-  inference. We do not log prompts, do not train on user data, and do not browse
-  it — but a compromise of the running broker process could, in principle, see
-  in-flight plaintext. We say so on the same page, in the same voice. If you find
-  a way to make the at-rest guarantee false, that is a serious finding.
+- **The hosted cloud broker** does not run inference, does not accept provider keys,
+  and does not decrypt memory in-flight. It serves strictly as a device-token
+  authentication door and a blind relay/backup vault for client-sealed AES-256-GCM
+  ciphertext. The vault key is derived client-side via HKDF-SHA256 from the user's
+  Aedelgard key; the broker stores only a one-way verification hash of the key
+  and never holds the plaintext vault key or HKDF derivation parameters. Even
+  under full server compromise or live operator memory dumps, the broker holds only
+  opaque ciphertext.
+
+> **Architectural transition note (updated 8 September 2026):**
+> Earlier development phases evaluated a hosted broker-inference mode where the
+> broker accepted provider credentials and decrypted memory during request execution.
+> That architecture was formally retired in September 2026 in favour of strictly
+> direct client-to-provider inference (or local models). The broker no longer accepts
+> provider keys, does not decrypt context in-flight, and operates exclusively as an
+> encrypted sync and relay service.
 
 If a claim anywhere in the product contradicts
 [PRIVACY_STATEMENT.md](https://aedelgard.com/privacy), the claim is the bug —
