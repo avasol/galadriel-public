@@ -5,16 +5,15 @@ content is archived to the MemPalace first (via `palace.mine_batch_dir`).
 Archive is fire-and-forget — a failure here must never break compaction.
 
 Summarization rides the agent's own LLMProvider seam (harness/providers.py) —
-it does NOT construct a private Anthropic client. That means /compact never
-requires ANTHROPIC_API_KEY when the dialed brain is Gemini or Bedrock; it just
-asks whatever provider is already live for a cheap, short completion. For
-Anthropic specifically we still name Haiku explicitly, since on that provider
-the dialed model (Sonnet/Opus via the Brain Dial) is deliberately the
-expensive tier and Haiku is a genuine, separate cheap SKU on the same key.
-Gemini/Bedrock ignore the `model` kwarg entirely and always run whatever
-model they were constructed with — which is already their cheap/fast default
-(gemini-2.5-flash, nova-micro) — so there is nothing cheaper to reach for
-there.
+it does NOT construct a private provider client. That means /compact never
+requires external keys beyond what is dialed in; it asks whatever provider is
+already live for a cheap, short completion.
+
+To avoid running trims on expensive flagship brains (Opus, Fable, GPT-6,
+Gemini Pro), compaction dynamically queries Palantír (`/v1/recommend?task=summarisation`)
+for the lowest-cost active model under the active provider brand, with clean
+static fallbacks if Palantír is offline. All provider adapters honour this
+economy model passed to complete(model=...).
 """
 
 import asyncio
@@ -33,17 +32,78 @@ IMAGE_RETENTION_USER_TURNS = 3
 # summarized.
 TOOL_RESULT_FRESH_MESSAGES = 20
 
-# The dedicated cheap SKU on Anthropic. Only consulted when provider.name ==
-# "anthropic" — every other provider ignores the `model` kwarg on complete().
-_ANTHROPIC_SUMMARY_MODEL = "claude-haiku-4-5-20251001"
+# Static fallback economy models per provider brand when Palantír is unreachable.
+_STATIC_ECONOMY_MODELS = {
+    "anthropic": "claude-haiku-4-5-20251001",
+    "openai": "gpt-5.6-luna",
+    "gemini": "gemini-3.5-flash-lite",
+    "google": "gemini-3.5-flash-lite",
+    "bedrock": "amazon.nova-micro-v1:0",
+    "bedrock-nova": "amazon.nova-micro-v1:0",
+}
+
+_PALANTIR_PROVIDER_MAP = {
+    "anthropic": "anthropic",
+    "gemini": "google",
+    "google": "google",
+    "openai": "openai",
+    "bedrock": "bedrock",
+    "bedrock-nova": "bedrock",
+}
+
+_ECONOMY_MODEL_CACHE: dict[str, tuple[float, str]] = {}
+_CACHE_TTL_SEC = 3600
+
+
+def get_economy_summary_model(provider_name: str) -> str:
+    """Resolve the lowest-cost model for conversation trims/summarization.
+    Queries Palantír's recommendation engine (/v1/recommend?task=summarisation)
+    with brand filtering, cached in-process for 1 hour, with graceful static
+    fallback."""
+    import time
+    import urllib.request
+    import json
+    import os
+
+    prov = (provider_name or "").lower()
+    now = time.time()
+    if prov in _ECONOMY_MODEL_CACHE:
+        cached_ts, cached_mid = _ECONOMY_MODEL_CACHE[prov]
+        if now - cached_ts < _CACHE_TTL_SEC:
+            return cached_mid
+
+    palantir_prov = _PALANTIR_PROVIDER_MAP.get(prov, prov)
+    palantir_base = os.environ.get("PALANTIR_URL", "https://api.aedelgard.com/v1/models")
+    # Base url might be .../v1/models -> resolve to /v1/recommend
+    rec_url = palantir_base.replace("/v1/models", "/v1/recommend")
+    if "/v1/recommend" not in rec_url:
+        rec_url = "https://api.aedelgard.com/v1/recommend"
+    url = f"{rec_url}?task=summarisation&providers={palantir_prov}"
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Aedelgard-Compaction/1.0"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+            ranked = data.get("ranked", [])
+            if ranked:
+                chosen = ranked[0]["model_id"]
+                _ECONOMY_MODEL_CACHE[prov] = (now, chosen)
+                log.info(f"Compaction: resolved economy model via Palantír: {prov} -> {chosen}")
+                return chosen
+    except Exception as exc:
+        log.debug(f"Compaction: Palantír recommendation failed for {prov}: {exc}")
+
+    fallback = _STATIC_ECONOMY_MODELS.get(prov, "claude-haiku-4-5-20251001")
+    _ECONOMY_MODEL_CACHE[prov] = (now, fallback)
+    return fallback
 
 
 async def _archive_to_palace(items: list[dict]) -> None:
     """Write verbatim pre-compaction tool_results to the palace.
 
     Each item: {"message_idx": int, "tool_use_id": str, "content": str}.
-    Writes a timestamped batch dir, then delegates the actual mine to
-    `palace.mine_batch_dir`. Silent on failure — compaction continues.
+    Writes a timestamped batch dir on EBS, then delegates the actual mine
+    to `palace.mine_batch_dir`. Silent on failure — compaction continues.
     """
     if not items:
         return
@@ -116,10 +176,8 @@ async def compact_conversation(messages: list, provider) -> dict:
             "images_removed": 0,
         }
 
-    summarize_model = (
-        _ANTHROPIC_SUMMARY_MODEL if getattr(provider, "name", None) == "anthropic"
-        else "n/a"  # ignored by every non-Anthropic provider's complete()
-    )
+    provider_name = getattr(provider, "name", "anthropic")
+    summarize_model = get_economy_summary_model(provider_name)
     summaries_created = 0
     images_removed = 0
     compacted = []

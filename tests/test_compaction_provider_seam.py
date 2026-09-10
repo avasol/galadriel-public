@@ -110,10 +110,10 @@ def test_non_anthropic_provider_never_touches_anthropic_key():
 
         assert result["summaries_created"] == 1
         assert len(provider.calls) == 1
-        # model is a placeholder the real GeminiProvider ignores — the point
-        # is no os.environ["ANTHROPIC_API_KEY"] lookup or client construction
-        # ever happens for a non-anthropic provider.
-        assert provider.calls[0]["model"] == "n/a"
+        # Palantír / economy resolver selects Gemini's lowest-cost active model
+        # (gemini-3.5-flash-lite), and no os.environ["ANTHROPIC_API_KEY"] lookup
+        # or Anthropic client construction ever happens for a non-anthropic provider.
+        assert "gemini" in provider.calls[0]["model"].lower()
     finally:
         if saved is not None:
             os.environ["ANTHROPIC_API_KEY"] = saved
