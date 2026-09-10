@@ -547,6 +547,12 @@ def _dump_prompt_to_file(memory: "MemoryManager", tools: list, debug_dir: str = 
         log.warning(f"Could not dump prompt to file: {e}")
 
 
+
+def _is_request_too_large_error(exc: Exception) -> bool:
+    """Detect HTTP 413 / request_too_large errors from Anthropic or relays."""
+    s = str(exc).lower()
+    return "request_too_large" in s or "413" in s or "request exceeds the maximum size" in s
+
 class GaladrielAgent:
     """Stateful conversational agent backed by Claude with tool use."""
 
@@ -1036,6 +1042,7 @@ class GaladrielAgent:
             })
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
+        request_too_large_retries = 0  # Track consecutive 413 payload hits
 
         while True:
             # Guard against empty message list
@@ -1077,15 +1084,39 @@ class GaladrielAgent:
                 messages=messages_for_api,
             )
             try:
-                response = await self.provider.complete(
-                    **call_kwargs, thinking=self._thinking_param())
+                try:
+                    response = await self.provider.complete(
+                        **call_kwargs, thinking=self._thinking_param())
+                except Exception as e:
+                    # THE ADAPTIVE MIRROR: if the brain rejected our thinking
+                    # dialect, learn the correction once and retry immediately.
+                    if not self._adapt_thinking_dialect(e):
+                        raise
+                    response = await self.provider.complete(
+                        **call_kwargs, thinking=self._thinking_param())
             except Exception as e:
-                # THE ADAPTIVE MIRROR: if the brain rejected our thinking
-                # dialect, learn the correction once and retry immediately.
-                if not self._adapt_thinking_dialect(e):
-                    raise
-                response = await self.provider.complete(
-                    **call_kwargs, thinking=self._thinking_param())
+                if _is_request_too_large_error(e) and request_too_large_retries < 3:
+                    request_too_large_retries += 1
+                    log.warning(
+                        f"HTTP 413 / request_too_large encountered (attempt {request_too_large_retries}/3). "
+                        f"Executing emergency history trim for channel {channel_id} ({len(messages)} msgs)..."
+                    )
+                    archive_tag = f"request_too_large_{channel_id}"
+                    try:
+                        from . import palace
+                        asyncio.create_task(palace.archive_conversation(archive_tag, list(messages)))
+                        self._post_recovery_archive_tag[channel_id] = archive_tag
+                    except Exception as _arch_err:
+                        log.warning(f"413 recovery archive failed: {_arch_err}")
+
+                    if request_too_large_retries == 1:
+                        self._trim_history(messages, max_messages=40, channel_id=channel_id)
+                    elif request_too_large_retries == 2:
+                        self._trim_history(messages, max_messages=15, channel_id=channel_id)
+                    else:
+                        self._hard_reset(messages, user_message)
+                    continue
+                raise
 
             self._log_usage(response)
             # THE GLASS PROMPT: trace this provider call.
