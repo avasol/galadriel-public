@@ -108,7 +108,7 @@ def _strip_palace_content(text: str) -> str:
     #    concrete palace tool call — e.g. the heartbeat completion protocol's
     #    "File a palace drawer... `palace_add_drawer(...)`" bullet. Whole-line
     #    removal: a leftover bullet fragment is worse than one fewer bullet.
-    stray_line = re.compile(r"\n[^\n]*`palace_\w+\([^\n]*\n")
+    stray_line = re.compile(r"\n[^\n]*palace_\w+[^\n]*\n")
     text = stray_line.sub("\n", text)
 
     return text
@@ -234,10 +234,14 @@ class MemoryManager:
 
         vision = self._load_active_vision()
         if vision:
+            if no_palace:
+                vision = _strip_palace_content(vision)
             parts.append(f"# Active Vision\n\n{vision}")
 
         memory = self._read_file(self.config_dir / LONG_TERM_MEMORY_FILE)
         if memory:
+            if no_palace:
+                memory = _strip_palace_content(memory)
             parts.append(f"# Long-Term Memory\n\n{memory}")
 
         extras = self._load_extra_context_files()

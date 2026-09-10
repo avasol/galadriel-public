@@ -25,6 +25,7 @@ Environment overrides:
 """
 
 import asyncio
+import json
 import logging
 import random
 import re
@@ -224,12 +225,14 @@ def _journal_fallback(query: str, days: int = 3, k: int = 3,
         scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
         lines = ["### Unmined journal (verbatim, lexical match — not yet vector-indexed)"]
         for score, ts, item in scored[:k]:
-            content = (item.get("content") or "").strip().replace("\n", " ")
-            if len(content) > max_chars:
-                content = content[:max_chars] + "…"
+            item_content = (item.get("content") or "").strip().replace("\n", " ")
+            if contains_binary_run(item_content):
+                item_content = sanitize_binary_payloads(item_content)
+            if len(item_content) > max_chars:
+                item_content = item_content[:max_chars] + "…"
             lines.append(
                 f"- `{ts[:16]}` [{item.get('channel', '?')}/"
-                f"{item.get('role', '?')}] {content}")
+                f"{item.get('role', '?')}] {item_content}")
         return "\n".join(lines)
     except Exception as e:
         log.debug(f"journal fallback failed: {e}")
@@ -469,16 +472,34 @@ def start_unmined_sweeper() -> "asyncio.Task":
 _B64_RUN = re.compile(r"[A-Za-z0-9+/=]{300,}")
 
 
-def is_binary_noise(text: str) -> bool:
-    """True if *text* is a bare base64/binary payload rather than words.
+def contains_binary_run(text: str, min_len: int = 300) -> bool:
+    """True if *text* contains an unbroken run of >= min_len base64/binary chars.
 
-    Image blocks that get str()'d into the archive are chunked and embedded
-    into thousands of meaningless drawers. "Verbatim" is scoped to WORDS; a
-    payload is never a memory. Used by random_drawer() so a dream is never
-    seeded by pixels, and by the serializer tests.
+    Detects both bare payloads and mixed chunks — e.g. JSON image-data tails,
+    Claude thinking-block signatures ('signature': 'CAIS...'), or raw
+    payloads embedded inside conversation transcripts.
     """
-    s = (text or "").replace("\n", "").strip()
-    return len(s) > 300 and re.fullmatch(r"[A-Za-z0-9+/=]+", s[:1000]) is not None
+    if not text:
+        return False
+    if min_len == 300:
+        return _B64_RUN.search(text.replace("\n", "")) is not None
+    return re.search(rf"[A-Za-z0-9+/=]{{{min_len},}}", text.replace("\n", "")) is not None
+
+
+def sanitize_binary_payloads(text: str) -> str:
+    """Replace base64 runs >= 300 chars with a clean placeholder."""
+    if not text:
+        return ""
+    return _B64_RUN.sub("[binary omitted]", text)
+
+
+def is_binary_noise(text: str) -> bool:
+    """True if *text* is a bare base64/binary payload or contains a binary payload run.
+
+    (Widened to contains-a-run so mixed chunks with thinking signatures or image
+    tails cannot slip through into memory or dreams).
+    """
+    return contains_binary_run(text, min_len=300)
 
 
 def _image_placeholder(block: dict) -> str:
@@ -495,22 +516,27 @@ def _render_result_content(content) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
+        if contains_binary_run(content):
+            return sanitize_binary_payloads(content)
         return content
     if isinstance(content, list):
         out = []
         for b in content:
             if not isinstance(b, dict):
-                out.append(str(b)[:4000])
+                out.append(sanitize_binary_payloads(str(b))[:4000])
                 continue
             bt = b.get("type")
             if bt == "text":
-                out.append(b.get("text", ""))
+                txt = b.get("text", "")
+                if contains_binary_run(txt):
+                    txt = sanitize_binary_payloads(txt)
+                out.append(txt)
             elif bt == "image":
                 out.append(_image_placeholder(b))
             else:
-                out.append(_B64_RUN.sub("[binary omitted]", str(b))[:4000])
+                out.append(sanitize_binary_payloads(str(b))[:4000])
         return "\n".join(out)
-    return _B64_RUN.sub("[binary omitted]", str(content))[:4000]
+    return sanitize_binary_payloads(str(content))[:4000]
 
 
 def _serialize_message(msg: dict) -> str:
@@ -527,12 +553,19 @@ def _serialize_message(msg: dict) -> str:
                 continue
             btype = block.get("type", "?")
             if btype == "text":
-                parts.append(block.get("text", ""))
+                txt = block.get("text", "")
+                if contains_binary_run(txt):
+                    txt = sanitize_binary_payloads(txt)
+                parts.append(txt)
             elif btype == "tool_use":
+                raw_input = block.get("input", {})
+                raw_str = json.dumps(raw_input) if isinstance(raw_input, (dict, list)) else str(raw_input)
+                if contains_binary_run(raw_str):
+                    raw_str = sanitize_binary_payloads(raw_str)
                 parts.append(
                     f"### tool_use: {block.get('name', '?')} "
                     f"(id={block.get('id', '?')})\n\n"
-                    f"```json\n{block.get('input', {})}\n```"
+                    f"```json\n{raw_str}\n```"
                 )
             elif btype == "tool_result":
                 parts.append(
@@ -544,9 +577,15 @@ def _serialize_message(msg: dict) -> str:
             elif btype == "image":
                 parts.append(_image_placeholder(block))
             else:
-                parts.append(f"[{btype} block]\n\n{block}")
+                raw_str = str(block)
+                if contains_binary_run(raw_str):
+                    raw_str = sanitize_binary_payloads(raw_str)
+                parts.append(f"[{btype} block]\n\n{raw_str[:4000]}")
     else:
-        parts.append(str(content))
+        raw_str = str(content)
+        if contains_binary_run(raw_str):
+            raw_str = sanitize_binary_payloads(raw_str)
+        parts.append(raw_str)
     return "\n\n".join(parts)
 
 
@@ -727,6 +766,11 @@ async def add_drawer(
     if not content or not content.strip():
         return "[palace add] empty content — nothing filed."
 
+    if contains_binary_run(content):
+        content = sanitize_binary_payloads(content)
+        if not content or content.strip() in ("", "[binary omitted]"):
+            return "[palace add] refused: binary payload detected — a payload is not a memory."
+
     ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     slug = _slug(topic) if topic else _slug(content.strip().split("\n", 1)[0])
     room_slug = _slug(room) if room else None
@@ -865,7 +909,7 @@ def random_drawer(max_chars: int = 600) -> dict | None:
             did, dmeta = random.choice(active)
             doc = col.get(ids=[did], include=["documents"])
             text = ((doc.get("documents") or [""])[0] or "").strip()
-            if not is_binary_noise(text):
+            if not contains_binary_run(text):
                 break  # a payload is not a memory; never seed a dream with pixels
         else:
             return None

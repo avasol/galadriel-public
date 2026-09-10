@@ -211,6 +211,17 @@ The 90% cache-read discount remains intact. Adding MemPalace costs ~1.5 percenta
 - **Long term (across months):** The knowledge graph preserves history. When a fact changes, the old triple gets a `valid_to` date and the new one goes in — so "what was the max_tokens setting last October?" and "what is it now?" both resolve correctly. Nothing is overwritten, only superseded.
 - **On relational questions:** Graph traversal ("everything ever said about the payment service," "every decision involving the scheduler," "the full timeline of the Polly voice choice") resolves as **one KG call against the local SQLite store**. The kind of query that, done naively through conversation history, would cost you real money — or just fail outright because the context has long since been compacted away.
 
+### 🛡️ Memory Hygiene & The Ingest Gate
+
+Persistent verbatim memory is only as valuable as the signal it preserves. Multimodal and reasoning models routinely emit large binary payloads (base64 image strings, protobuf thinking-block signatures like `CAIS...`) in conversation blocks and tool results. Left unguarded, raw base64 runs get chunked into meaningless drawers, bloating ChromaDB collections, diluting semantic retrieval, and seeding hallucinations during reflection loops.
+
+The harness enforces a strict **ingest gate and sanitization boundary**:
+- **Binary Payload Detection (`contains_binary_run`)**: Any unbroken run of $\ge 300$ base64 characters is caught at the boundary.
+- **Archive Serialization Sanitization**: `_serialize_message()` and `_render_result_content()` strip binary payloads before archiving, preserving semantic words while replacing base64 chunks with clean placeholders (`[binary omitted]`, `[image omitted]`, `[thinking — omitted]`).
+- **One-Shot Gate (`add_drawer`)**: Direct drawer filings via `palace_add_drawer` refuse pure binary payloads with an explicit rejection notice.
+- **Batch Pre-Flight Scrubber**: `palace_mine_guard.preflight` scrubs batch files before `mempalace mine` touches them, ensuring no unscrubbed payload ever enters ChromaDB or the knowledge graph.
+- **Reflection Immunity (`random_drawer`)**: Ambient cognitive loops and dream routines actively skip any drawer containing binary runs.
+
 Read on for [the metaphor system](#the-memory-palace-metaphor) (wings, rooms, drawers, halls) and the [caching notes](#running-costs-prompt-caching-in-practice) that keep it affordable.
 
 ---

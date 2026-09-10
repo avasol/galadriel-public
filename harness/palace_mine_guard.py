@@ -193,6 +193,24 @@ def measure_batch(batch_dir: Path) -> tuple[int, int]:
     return files, size
 
 
+def sanitize_batch_files(batch_dir: Path) -> int:
+    """Scrub any base64 runs >= 300 chars from text files in batch_dir before mining.
+    Returns count of scrubbed files."""
+    b64_run = re.compile(r"[A-Za-z0-9+/=]{300,}")
+    scrubbed = 0
+    for p in Path(batch_dir).rglob("*"):
+        if p.is_file() and p.suffix in (".md", ".json", ".txt", ".jsonl"):
+            try:
+                txt = p.read_text(encoding="utf-8")
+                if b64_run.search(txt):
+                    new_txt = b64_run.sub("[binary omitted]", txt)
+                    p.write_text(new_txt, encoding="utf-8")
+                    scrubbed += 1
+            except Exception:
+                pass
+    return scrubbed
+
+
 def preflight(batch_dir: Path, *, max_files: int = MAX_BATCH_FILES,
               max_bytes: int = MAX_BATCH_BYTES) -> Optional[MineDiagnosis]:
     """Refuse a batch that no legitimate filing could produce. Returns a
@@ -205,6 +223,9 @@ def preflight(batch_dir: Path, *, max_files: int = MAX_BATCH_FILES,
                     f"({max_files} files / {max_bytes / 1_048_576:.0f} MiB). "
                     f"This is a bulk ingest, not a filing: stage what you mean to mine."),
         )
+    scrubbed = sanitize_batch_files(batch_dir)
+    if scrubbed:
+        log.info(f"Pre-flight sanitized binary payloads in {scrubbed} file(s) in {batch_dir.name}")
     return None
 
 
