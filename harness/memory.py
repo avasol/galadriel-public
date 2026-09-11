@@ -283,7 +283,7 @@ class MemoryManager:
             # hall names use snake_case, so hyphens → underscores.
             hall_key = project.replace("-", "_")
             parts.append(
-                f"# Active Project: `{project}`\n\n"
+                f"# Active Project: `{project}` · 幽玄 · Φύσις · راز\n\n"
                 f"Scope your palace queries when this project is in play: "
                 f"`palace_search(query=..., hall=\"{hall_key}\")` or "
                 f"`palace_search(query=..., room=<relevant>)`. "
