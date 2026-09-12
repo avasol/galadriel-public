@@ -307,6 +307,7 @@ def _anthropic_messages_to_responses_input(messages):
             out.append({"role": role, "content": content})
             continue
         texts = []
+        images = []
         for b in content or []:
             if not isinstance(b, dict):
                 continue
@@ -314,6 +315,13 @@ def _anthropic_messages_to_responses_input(messages):
             if btype == "text":
                 if b.get("text"):
                     texts.append(b["text"])
+            elif btype == "image" and role == "user":
+                src = b.get("source") or {}
+                if src.get("type") == "base64" and src.get("data"):
+                    images.append({"type": "input_image", "image_url":
+                        "data:%s;base64,%s" % (src.get("media_type", "image/png"), src["data"])})
+                elif src.get("type") == "url" and src.get("url"):
+                    images.append({"type": "input_image", "image_url": src["url"]})
             elif btype == "tool_use":
                 out.append({
                     "type": "function_call",
@@ -327,7 +335,10 @@ def _anthropic_messages_to_responses_input(messages):
                     "call_id": b.get("tool_use_id"),
                     "output": _flatten_tool_result_content(b.get("content")) or "",
                 })
-        if texts:
+        if images:
+            out.append({"role": role, "content":
+                [{"type": "input_text", "text": t} for t in texts] + images})
+        elif texts:
             out.append({"role": role, "content": "\n".join(texts)})
     return out
 

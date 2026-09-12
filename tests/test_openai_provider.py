@@ -424,3 +424,20 @@ def test_fallback_ladder_accepts_and_forwards_thinking():
                                   messages=[], thinking=th))
     assert raw == "raw"
     assert seen["thinking"] == th
+
+@pytest.mark.parametrize('text', ['', 'Judge this screenshot'])
+def test_responses_preserves_user_screenshot(text):
+    from harness.providers import _anthropic_messages_to_responses_input
+    blocks = ([{'type': 'text', 'text': text}] if text else []) + [
+        {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png', 'data': 'cG5n'}}]
+    result = _anthropic_messages_to_responses_input([{'role': 'user', 'content': blocks}])
+    assert result == [{'role': 'user', 'content':
+        ([{'type': 'input_text', 'text': text}] if text else []) +
+        [{'type': 'input_image', 'image_url': 'data:image/png;base64,cG5n'}]}]
+
+
+def test_responses_preserves_url_image():
+    from harness.providers import _anthropic_messages_to_responses_input
+    result = _anthropic_messages_to_responses_input([{'role': 'user', 'content': [
+        {'type': 'image', 'source': {'type': 'url', 'url': 'https://example.org/test.png'}}]}])
+    assert result[0]['content'][0] == {'type': 'input_image', 'image_url': 'https://example.org/test.png'}
