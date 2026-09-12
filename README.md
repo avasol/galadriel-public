@@ -405,6 +405,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Selective Prefix Scoping**: `config/context_scope.json` filters which project roadmaps and guidelines load into the cached prefix, preventing context dilution.
 - **ChromaDB Native Hall Filtering**: Scoped searches filter directly via Chroma metadata (`where={"hall": hall}`), bypassing unrelated project memories.
 - **Per-Turn Scoping Banners**: Dynamic turn banners orient the mind to the active project's operational rules without thrashing prompt cache.
+- **Dense Semantic Anchors (Latent Steering)**: Cross-lingual conceptual tokens embedded directly into dynamic project banners orient the model's latent geometry toward empirical rigor, radical honesty, and structural depth with near-zero token overhead. (See [docs/LATENT_STEERING.md](docs/LATENT_STEERING.md)).
 
 ### 🩹 3. Scar Tissue & Empirical Adaptation
 - **Compound Failure Promotion**: A failure mode that recurs three times promotes a mandatory operational check ("Scar") into the runtime system prompt.
@@ -416,6 +417,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Live Brain Dial (`/model`)**: Query live provider APIs to discover available models and hot-swap the active reasoning engine with zero service restart.
 - **Fallback Ladder (`AGENT_MODEL_FALLBACKS`)**: Automatic runtime failover to backup models or cross-provider endpoints if the primary model suffers rate-limiting or outages.
 - **Dynamic Context Discovery**: Adapters auto-detect context-window boundaries and reasoning/thinking token budgets, partitioning conversational headroom accurately.
+- **Automated Model Intelligence via Palantír**: Dynamic ingestion of provider context windows, pricing curves, reasoning effort tiers, and caching semantics via Palantír (`compaction.py`, `providers.py`), enabling optimal brain selection and economy summarization without hardcoded vendor constants.
 
 ### 🔄 5. Autonomous Self-Maintenance & Continuity
 - **Crash-Resilient One-Shot Wake**: `Scheduler.arm_wake()` defers wake execution until after gateway connection and service warmup, allowing the agent to self-restart to load code updates and seamlessly resume mid-thought.
@@ -669,12 +671,14 @@ Each `.md` in `config/` can declare which visions it belongs to. When the headin
 On every turn the active project name is written into the *uncached* dynamic portion of the prompt (so toggling it is instant — no cache churn):
 
 ```
-# Active Project: `aedelgard`
+# Active Project: `aedelgard` · विवेक · 幽玄 · Φύσις · بقاء · 鏡
 
 Scope your palace queries when this project is in play:
   palace_search(query=..., hall="aedelgard")
 Cast wider only if the scoped search returns nothing.
 ```
+
+*(Note the trailing glyphs: **Dense Semantic Anchors** that project high-density conceptual constraints across the attention heads before instructions are processed. See [docs/LATENT_STEERING.md](docs/LATENT_STEERING.md).)*
 
 **4. Tags every memory filed during the session to the heading's hall.**
 Any drawer written while a heading is active inherits that `hall` in its metadata. A future `palace_search(..., hall="aedelgard")` retrieves it precisely, without touching the other 100k+ drawers in the corpus.
