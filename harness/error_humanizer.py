@@ -1,4 +1,4 @@
-"""Translate Anthropic API exceptions into short, human-readable Discord messages.
+"""Translate Anthropic API exceptions into short, human-readable Discord/Tower messages.
 
 Returns None if the exception isn't a recognized Anthropic API error — callers
 should fall back to their existing generic message in that case.
@@ -7,7 +7,27 @@ should fall back to their existing generic message in that case.
 import anthropic
 
 
+def _is_credit_exhausted(detail: str) -> bool:
+    d = detail.lower()
+    return any(phrase in d for phrase in (
+        "credit balance is too low",
+        "purchase credits",
+        "plans & billing",
+        "insufficient_quota",
+        "exceeded your current quota",
+        "billing details",
+    ))
+
+
 def humanize_anthropic_error(exc: Exception) -> str | None:
+    if isinstance(exc, UnicodeEncodeError):
+        ch = exc.object[exc.start] if exc.start < len(exc.object) else "?"
+        return (
+            "🔑 A stored credential contains a character that can't travel "
+            f"in an HTTP header (U+{ord(ch):04X} at position {exc.start}). "
+            "A saved key is likely a decorated or reflowed copy — re-enter "
+            "it on the Keys page."
+        )
     if isinstance(exc, anthropic.APITimeoutError):
         return (
             "⏳ The request to Anthropic timed out before I could answer. "
@@ -48,8 +68,19 @@ def humanize_anthropic_error(exc: Exception) -> str | None:
             f"💥 Anthropic's servers threw HTTP {getattr(exc, 'status_code', '5xx')}. "
             "Already logged — try again in a moment."
         )
+
+    # Check for credit balance / billing exhaustion across any 4xx/status error
+    detail = _extract_api_message(exc)
+    if _is_credit_exhausted(detail):
+        return (
+            "💳 Anthropic credit balance exhausted:\n"
+            f"`{detail}`\n\n"
+            "Prepaid API credits have run out. Top up at "
+            "https://console.anthropic.com/settings/plans to continue, "
+            "or switch to another brain provider."
+        )
+
     if isinstance(exc, anthropic.BadRequestError):
-        detail = _extract_api_message(exc)
         return (
             f"⚠️ The API rejected my request as malformed:\n`{detail}`\n"
             "If this repeats, `/compact` or `/new` usually clears it."
@@ -57,7 +88,7 @@ def humanize_anthropic_error(exc: Exception) -> str | None:
     if isinstance(exc, anthropic.APIStatusError):
         return (
             f"⚠️ Anthropic returned HTTP {getattr(exc, 'status_code', '?')}: "
-            f"`{_extract_api_message(exc)}`"
+            f"`{detail}`"
         )
     return None
 
