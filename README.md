@@ -437,6 +437,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 ### 🖥️ 8. Interfaces & Observability
 - **Discord Gateway**: Full Discord integration with native slash commands (`/model`, `/status`, `/help`, `/new`, `/compact`), interactive buttons, and chunked markdown rendering.
 - **Tower Web UI**: Clean local control panel on `localhost:8080` with live SSE chat streaming, conversation compaction indicators, and real-time MemPalace capacity meters (HNSW indexing limits & Chroma DB thresholds).
+- **[Xeneon Edge Companion HUD](https://github.com/avasol/xeneon-edge-companion)**: Dedicated 2560×720 ultrawide desktop dashboard and companion terminal for Corsair iCUE and Corsair Xeneon Flex/Edge monitors. Features hardware-accelerated GPU layer isolation (`translateZ(0)`) to eliminate multi-monitor video decode flicker, buffered SSE token streaming, interactive tool approvals, and real-time journal log streaming.
 
 ---
 
