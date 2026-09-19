@@ -584,9 +584,10 @@ class OpenAIProvider:
                                         json=body, headers=self._headers())
         if r.status_code == 401:
             # TERMINAL: the key is provably dead — not a rung to step past.
+            _hint = "NEBIUS_API_KEY" if self.name == "nebius" else "OPENAI_API_KEY"
             raise ProviderAuthError(
                 self.name + ": the endpoint rejected the key (HTTP 401). "
-                "Check OPENAI_API_KEY.")
+                f"Check {_hint}.")
         if r.status_code != 200:
             exc = RuntimeError("%s HTTP %s: %s" % (
                 self.name, r.status_code, r.text[:200]))
@@ -649,7 +650,8 @@ class OpenAIProvider:
         compatible servers return whatever they host, unfiltered."""
         r = await self._client.get(self.base_url + "/models", headers=self._headers())
         if r.status_code == 401:
-            raise ProviderAuthError(self.name + ": the endpoint rejected the key (HTTP 401).")
+            _hint = "NEBIUS_API_KEY" if self.name == "nebius" else "OPENAI_API_KEY"
+            raise ProviderAuthError(self.name + f": the endpoint rejected the key (HTTP 401). Check {_hint}.")
         r.raise_for_status()
         data = r.json().get("data", []) or []
         out = []
@@ -687,6 +689,30 @@ class LocalProvider(OpenAIProvider):
             api_key=api_key or os.environ.get("OPENAI_API_KEY") or "local",
             base_url=base_url or os.environ.get("LOCAL_BASE_URL"),
             model=model or os.environ.get("LOCAL_MODEL"))
+
+
+class NebiusProvider(OpenAIProvider):
+    """The European sovereign door: Nebius Token Factory (api.studio.nebius.ai).
+
+    Direct serverless inference for DeepSeek (V4-Pro, V4-Flash, R1, V3), Qwen,
+    and open-weight powerhouses hosted in Mäntsälä, Finland under EU jurisdiction.
+    Speaks the OpenAI chat/completions dialect.
+    """
+
+    name = "nebius"
+    _default_base = "https://api.studio.nebius.ai/v1"
+
+    def __init__(self, *, api_key=None, base_url=None, model=None):
+        key = api_key or os.environ.get("NEBIUS_API_KEY") or ""
+        if not key:
+            raise RuntimeError(
+                "NebiusProvider needs NEBIUS_API_KEY. Set it in .env or your environment."
+            )
+        super().__init__(
+            api_key=key,
+            base_url=base_url or os.environ.get("NEBIUS_BASE_URL") or self._default_base,
+            model=model or os.environ.get("NEBIUS_MODEL") or "deepseek-ai/DeepSeek-V3",
+        )
 
 
 class _NovaBlock:
@@ -1365,6 +1391,7 @@ _REGISTRY = {
     "gemini": GeminiProvider,
     "openai": OpenAIProvider,
     "local": LocalProvider,
+    "nebius": NebiusProvider,
     "bedrock-nova": BedrockNovaProvider,
 }
 
@@ -1391,6 +1418,8 @@ _PROVIDER_REQUIREMENTS = {
                      "AWS credentials on the host (role or env)."),
     "local":        ((),  # offline model, no cloud credential
                      "nothing — a local model runs offline on your own machine."),
+    "nebius":       (("NEBIUS_API_KEY",),
+                     "your own Nebius key — European sovereign inference (Finland); we are not on the wire."),
 }
 
 
