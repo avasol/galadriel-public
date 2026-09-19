@@ -66,6 +66,21 @@ cp .env.example .env          # add your ANTHROPIC_API_KEY
 python harness/main.py
 ```
 
+Both quick-starts load settings from the same `.env` file. Choose a provider by
+setting `AGENT_PROVIDER` and its credential as shown below, then start or restart
+the Docker container (or the local Python process):
+
+| Provider | Get credentials | `.env` setting |
+|---|---|---|
+| Anthropic (default) | [Anthropic Console](https://console.anthropic.com/) | `AGENT_PROVIDER=anthropic`<br>`ANTHROPIC_API_KEY=sk-ant-...` |
+| Gemini | [Google AI Studio](https://aistudio.google.com/apikey) | `AGENT_PROVIDER=gemini`<br>`GEMINI_API_KEY=...` |
+| OpenAI | [OpenAI API keys](https://platform.openai.com/api-keys) | `AGENT_PROVIDER=openai`<br>`OPENAI_API_KEY=sk-...` |
+| Bedrock (Nova) | [Amazon Bedrock](https://console.aws.amazon.com/bedrock/) | `AGENT_PROVIDER=bedrock`<br>Use the AWS credential chain (for example, an EC2 instance role); no API key is needed. Set `AWS_REGION` if you are not using the default region. |
+| Nebius (DeepSeek) | [Nebius AI Studio](https://studio.nebius.ai/) | `AGENT_PROVIDER=nebius`<br>`NEBIUS_API_KEY=...` |
+
+Keep `.env` private and never commit real credentials. The Docker quick-start
+passes this file to the container; for local Python, the app reads it directly.
+
 ## Provider seam — swap the brain, keep the mind
 
 The agent's brain is a provider adapter. Change one environment variable to switch:
