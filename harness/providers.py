@@ -187,6 +187,43 @@ class ProviderAuthError(RuntimeError):
     HONEST DOOR) alongside OpenAIProvider, 2026-08-26 (the Council build)."""
 
 
+class ProviderVisionError(RuntimeError):
+    """The active brain cannot see images — it is text-only.
+    Raised BEFORE the API call so the agent can surface a clean
+    message to the user instead of a cryptic HTTP error."""
+    pass
+
+
+def _image_block_to_openai_chat(b):
+    """An Anthropic image block -> the OpenAI chat.completions image_url shape,
+    or None when it carries nothing sendable. Shared by the user-turn path and
+    the tool-result hoist path."""
+    src = b.get("source", {}) or {}
+    if src.get("type") == "base64" and src.get("data"):
+        return {"type": "image_url",
+                "image_url": {"url": "data:%s;base64,%s" % (
+                    src.get("media_type", "image/png"), src["data"])}}
+    if src.get("type") == "url" and src.get("url"):
+        return {"type": "image_url", "image_url": {"url": src["url"]}}
+    return None
+
+
+def _tool_result_images(content):
+    """Image blocks riding inside a tool_result's content list (look(),
+    generate_image() return these). The 'tool' role has no image slot in the
+    OpenAI chat dialect, so callers HOIST these into a following user turn —
+    without this, a multimodal brain never sees what look() returned."""
+    if not isinstance(content, list):
+        return []
+    out = []
+    for b in content or []:
+        if isinstance(b, dict) and b.get("type") == "image":
+            img = _image_block_to_openai_chat(b)
+            if img:
+                out.append(img)
+    return out
+
+
 def _anthropic_tools_to_openai(tools):
     """Anthropic tool defs -> OpenAI function tools. cache_control markers are
     an Anthropic caching contract and are stripped here."""
@@ -203,15 +240,15 @@ def _anthropic_tools_to_openai(tools):
 
 
 def _flatten_tool_result_content(content):
-    """tool_result content (str | [blocks]) -> plain text for a 'tool' message."""
+    """tool_result content (str | [blocks]) -> plain text for a 'tool' message.
+    Image blocks are NOT flattened here — they are hoisted into a following
+    user turn by the caller (see _tool_result_images)."""
     if isinstance(content, str):
         return content
     parts = []
     for b in content or []:
         if isinstance(b, dict) and b.get("type") == "text":
             parts.append(b.get("text", ""))
-        elif isinstance(b, dict) and b.get("type") == "image":
-            parts.append("[image omitted — this brain's API cannot see images inside tool results; switch to an Anthropic brain to use look()]")
     return "\n".join(parts)
 
 
@@ -229,7 +266,7 @@ def _anthropic_messages_to_openai(messages):
         if isinstance(content, str):
             out.append({"role": role, "content": content})
             continue
-        texts, images, tool_calls, tool_msgs = [], [], [], []
+        texts, images, tool_calls, tool_msgs, hoisted = [], [], [], [], []
         for b in content or []:
             if not isinstance(b, dict):
                 continue
@@ -245,20 +282,19 @@ def _anthropic_messages_to_openai(messages):
                                  "arguments": _json.dumps(b.get("input") or {})},
                 })
             elif btype == "tool_result":
+                tr = b.get("content")
                 tool_msgs.append({
                     "role": "tool",
                     "tool_call_id": b.get("tool_use_id"),
-                    "content": _flatten_tool_result_content(b.get("content")) or "",
+                    "content": _flatten_tool_result_content(tr) or "",
                 })
+                # images inside a tool_result (look()/generate_image()) cannot
+                # ride a 'tool' message — hoist them to the user turn below.
+                hoisted.extend(_tool_result_images(tr))
             elif btype == "image":
-                src = b.get("source", {}) or {}
-                if src.get("type") == "base64":
-                    images.append({
-                        "type": "image_url",
-                        "image_url": {"url": "data:%s;base64,%s" % (
-                            src.get("media_type", "image/png"),
-                            src.get("data", ""))},
-                    })
+                img = _image_block_to_openai_chat(b)
+                if img:
+                    images.append(img)
         if role == "assistant":
             msg = {"role": "assistant",
                    "content": "\n".join(texts) if texts else None}
@@ -270,9 +306,15 @@ def _anthropic_messages_to_openai(messages):
             # user turn: tool results answer the assistant's preceding
             # tool_calls, so they go FIRST as their own 'tool' messages.
             out.extend(tool_msgs)
-            if images:
+            all_images = images + hoisted
+            if all_images:
                 parts = [{"type": "text", "text": t} for t in texts]
-                out.append({"role": "user", "content": parts + images})
+                if not parts and hoisted:
+                    # a standalone tool-result image needs a leading text block
+                    # (a user screenshot does not)
+                    parts = [{"type": "text",
+                              "text": "[image from the tool result above]"}]
+                out.append({"role": "user", "content": parts + all_images})
             elif texts:
                 out.append({"role": "user", "content": "\n".join(texts)})
     return out
@@ -308,6 +350,7 @@ def _anthropic_messages_to_responses_input(messages):
             continue
         texts = []
         images = []
+        hoisted = []
         for b in content or []:
             if not isinstance(b, dict):
                 continue
@@ -316,12 +359,9 @@ def _anthropic_messages_to_responses_input(messages):
                 if b.get("text"):
                     texts.append(b["text"])
             elif btype == "image" and role == "user":
-                src = b.get("source") or {}
-                if src.get("type") == "base64" and src.get("data"):
-                    images.append({"type": "input_image", "image_url":
-                        "data:%s;base64,%s" % (src.get("media_type", "image/png"), src["data"])})
-                elif src.get("type") == "url" and src.get("url"):
-                    images.append({"type": "input_image", "image_url": src["url"]})
+                img = _image_block_to_responses_input(b)
+                if img:
+                    images.append(img)
             elif btype == "tool_use":
                 out.append({
                     "type": "function_call",
@@ -330,17 +370,66 @@ def _anthropic_messages_to_responses_input(messages):
                     "arguments": _json.dumps(b.get("input") or {}),
                 })
             elif btype == "tool_result":
+                tr = b.get("content")
                 out.append({
                     "type": "function_call_output",
                     "call_id": b.get("tool_use_id"),
-                    "output": _flatten_tool_result_content(b.get("content")) or "",
+                    "output": _flatten_tool_result_content(tr) or "",
                 })
-        if images:
-            out.append({"role": role, "content":
-                [{"type": "input_text", "text": t} for t in texts] + images})
+                # images inside a tool_result (look()/generate_image()) cannot
+                # ride a function_call_output — hoist them to a user turn.
+                for tb in _tool_result_images(tr):
+                    hoisted.append({"type": "input_image",
+                                    "image_url": tb["image_url"]["url"]})
+        if images or hoisted:
+            parts = [{"type": "input_text", "text": t} for t in texts]
+            if not parts and hoisted:
+                # a standalone tool-result image needs a leading text block
+                # (a user screenshot does not)
+                parts = [{"type": "input_text",
+                          "text": "[image from the tool result above]"}]
+            out.append({"role": "user", "content": parts + images + hoisted})
         elif texts:
             out.append({"role": role, "content": "\n".join(texts)})
     return out
+
+
+def _image_block_to_responses_input(b):
+    """Anthropic image block -> /v1/responses input_image shape, or None."""
+    src = b.get("source") or {}
+    if src.get("type") == "base64" and src.get("data"):
+        return {"type": "input_image",
+                "image_url": "data:%s;base64,%s" % (
+                    src.get("media_type", "image/png"), src["data"])}
+    if src.get("type") == "url" and src.get("url"):
+        return {"type": "input_image", "image_url": src["url"]}
+    return None
+
+
+def _has_user_images(messages):
+    """True if any user-turn message carries an image — either a top-level
+    image block (a pasted screenshot) OR one riding inside a tool_result
+    (look()/generate_image()). The tool-result case matters: a text-only brain
+    must refuse the look() image cleanly, not silently drop it.
+    Fast scan — stops at the first match, no full traversal."""
+    for m in messages or []:
+        role = m.get("role") if isinstance(m, dict) else None
+        if role != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "image":
+                    return True
+                if b.get("type") == "tool_result":
+                    inner = b.get("content")
+                    if isinstance(inner, list):
+                        for tb in inner:
+                            if isinstance(tb, dict) and tb.get("type") == "image":
+                                return True
+    return False
 
 
 class OpenAIProvider:
@@ -358,7 +447,16 @@ class OpenAIProvider:
     from that prefix so consecutive turns land on the same cache shard."""
 
     name = "openai"
+    supports_vision = True  # GPT-4o family sees images; overridden by text-only subclasses
     _default_base = "https://api.openai.com/v1"
+
+    def _supports_vision_for(self, model):
+        """Does this provider+model combination support vision?
+        Default: the class-level supports_vision flag. Subclasses with
+        mixed-vision model families override this to check per-model."""
+        if hasattr(self, "_model_supports_vision"):
+            return self._model_supports_vision(model)
+        return getattr(self, "supports_vision", True)
 
     # Model ids this brain will honour when the CALLER names one (the /model
     # dial, a fallback rung, a cross-provider pick). Anything else — e.g. the
@@ -467,11 +565,19 @@ class OpenAIProvider:
         import hashlib
         return "galadriel-" + hashlib.sha256(sys_text.encode("utf-8")).hexdigest()[:24]
 
-    async def _complete_responses(self, *, oai_model, max_tokens, sys_text, tools, messages, thinking):
+    async def _complete_responses(self, *, oai_model, max_tokens, sys_text, tools, messages, thinking, model=None):
         """Responses API dialect (/v1/responses). Supports reasoning AND function tools
         natively on reasoning families (e.g. gpt-6-astra)."""
         import json as _json
         input_items = _anthropic_messages_to_responses_input(messages)
+
+        # Vision guard: refuse BEFORE the API call if this brain is text-only
+        _guard_model = model or oai_model
+        if not self._supports_vision_for(_guard_model) and _has_user_images(messages):
+            raise ProviderVisionError(
+                self.name + ": " + _guard_model + " is text-only and cannot see images. "
+                "Switch to an Anthropic or Gemini brain (AGENT_PROVIDER) to use screenshots and look().")
+
         body = {
             "model": oai_model,
             "input": input_items,
@@ -544,13 +650,20 @@ class OpenAIProvider:
                        thinking=None):
         import json as _json
         oai_model = self._pick_model(model)
+
+        # Vision guard: refuse BEFORE the API call if this brain is text-only
+        if not self._supports_vision_for(model) and _has_user_images(messages):
+            raise ProviderVisionError(
+                self.name + ": " + model + " is text-only and cannot see images. "
+                "Switch to an Anthropic or Gemini brain (AGENT_PROVIDER) to use screenshots and look().")
+
         sys_text = _anthropic_system_to_text(system)
         if self._is_openai_com() and (
             "astra" in oai_model.lower() or oai_model.lower() in self._use_responses_endpoint
         ):
             return await self._complete_responses(
                 oai_model=oai_model, max_tokens=max_tokens, sys_text=sys_text,
-                tools=tools, messages=messages, thinking=thinking)
+                tools=tools, messages=messages, thinking=thinking, model=model)
         oai_messages = []
         if sys_text:
             oai_messages.append({"role": "system", "content": sys_text})
@@ -573,7 +686,7 @@ class OpenAIProvider:
             self._use_responses_endpoint.add(oai_model.lower())
             return await self._complete_responses(
                 oai_model=oai_model, max_tokens=max_tokens, sys_text=sys_text,
-                tools=tools, messages=messages, thinking=thinking)
+                tools=tools, messages=messages, thinking=thinking, model=model)
         if (r.status_code == 400 and oai_tools and "reasoning_effort" in r.text
                 and body.get("reasoning_effort") != "none"):
             # The API corrected us once: this model will not reason and call
@@ -700,6 +813,14 @@ class NebiusProvider(OpenAIProvider):
     """
 
     name = "nebius"
+    # Vision-capable DeepSeek models on Nebius. V4.1 Flash is the only
+    # multimodal DeepSeek on Nebius (verified live); V4 Pro / V3 are text-only.
+    _VISION_MODEL_PREFIXES = ("deepseek-ai/DeepSeek-V4.1",)
+
+    def _model_supports_vision(self, model_id):
+        """Per-model vision gate: V4.1 Flash sees images; V4 Pro does not."""
+        low = (model_id or "").lower()
+        return any(low.startswith(p.lower()) for p in self._VISION_MODEL_PREFIXES)
     _default_base = "https://api.studio.nebius.ai/v1"
 
     def __init__(self, *, api_key=None, base_url=None, model=None):

@@ -84,8 +84,12 @@ def test_tool_result_block_content_flattens_to_text():
             {"type": "text", "text": "b"}]}]}]
     out = _anthropic_messages_to_openai(msgs)
     assert out[0]["role"] == "tool"
-    assert out[0]["content"].startswith("a\n[image omitted")
-    assert out[0]["content"].endswith("\nb")
+    # text flattens to "a\nb" — the image is NOT inlined as an "[image omitted]"
+    # placeholder (that silent loss is what the hoist replaces)
+    assert out[0]["content"] == "a\nb"
+    # the image is hoisted into a following user turn so a vision brain sees it
+    assert out[1]["role"] == "user"
+    assert any(b.get("type") == "image_url" for b in out[1]["content"])
 
 
 def test_image_blocks_become_data_uris():
