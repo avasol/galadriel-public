@@ -630,7 +630,7 @@ class Scheduler:
             log.info(f"Scheduler [{channel_id}] response: {response[:100]}...")
 
             # Send to Discord
-            await self._send_to_discord(response)
+            await self._send_to_discord(response, channel_id=channel_id)
             return True
 
         except Exception as e:
@@ -653,12 +653,16 @@ class Scheduler:
             log.exception(f"Scheduler [{channel_id}] silent error: {e}")
             return ""
 
-    async def _send_to_discord(self, message: str):
+    async def _send_to_discord(self, message: str, channel_id: str | None = None):
         """Send a message to the authorized user via DM (or configured channel).
 
         Uses bot.get_dm_channel() which handles DM channel resolution
         correctly — DM channels aren't in the bot cache at startup,
         so we fall back to fetch_user() + create_dm().
+
+        `channel_id` carries the event key so the outbound message wears its
+        own humanized identity header (see harness/events.py). Applied HERE, at
+        the outbound boundary — never earlier, so journal/history stay raw.
         """
         if not self.bot:
             log.warning("No Discord bot available for scheduler message.")
@@ -680,7 +684,8 @@ class Scheduler:
         max_len = 1900
         chunks = []
         from .response_status import present
-        text = present(message)
+        from . import events as _events
+        text = _events.apply(channel_id, present(message))
         while text:
             if len(text) <= max_len:
                 chunks.append(text)
