@@ -10,3 +10,8 @@ tzdata
 # Native app window for the body (Windows/macOS). Optional: the launcher
 # falls back to the system browser if it (or its OS backend) is unavailable.
 # Installed per-OS in CI, not here, to avoid Linux GTK bundling complexity.
+
+# Optional: local, zero-API extractive summarization for trim continuity
+# (harness/bridge.py). Pure Python — no GPU, no model downloads. If absent,
+# the trim bridge degrades to a silent drop; a trim never breaks a live turn.
+sumy

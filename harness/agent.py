@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from .response_status import with_status, with_stream_status, record as record_response_status
 from .providers import make_provider
+from .bridge import build_bridge as _build_trim_bridge, inject_bridge as _inject_trim_bridge
 from .memory import MemoryManager
 from .journal import ConversationJournal
 from .tools import TOOL_DEFINITIONS, execute_tool
@@ -787,10 +788,15 @@ class GaladrielAgent:
 
         if safe_cut is not None and safe_cut < len(messages):
             if safe_cut > 0:
+                dropped_slice = messages[:safe_cut]
                 if archive_before_trim:
-                    self._archive_trim_slice(messages[:safe_cut], channel_id)
+                    self._archive_trim_slice(dropped_slice, channel_id)
                 self.last_trim_count = safe_cut
                 del messages[:safe_cut]
+                # Build continuity bridge from the dropped slice (zero API cost)
+                bridge = _build_trim_bridge(dropped_slice)
+                if bridge:
+                    messages[:] = _inject_trim_bridge(messages, bridge)
                 log.info(f"Trimmed conversation to {len(messages)} messages (cut {safe_cut} from front)")
             return
 
@@ -807,10 +813,14 @@ class GaladrielAgent:
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
             if msg.get("role") == "user" and not _contains_tool_result(msg):
+                dropped_slice = messages[:i]
                 if archive_before_trim and i > 0:
-                    self._archive_trim_slice(messages[:i], channel_id)
+                    self._archive_trim_slice(dropped_slice, channel_id)
                 self.last_trim_count = i
                 del messages[:i]
+                bridge = _build_trim_bridge(dropped_slice)
+                if bridge:
+                    messages[:] = _inject_trim_bridge(messages, bridge)
                 log.info(f"Fallback trim: kept from last plain user msg, now {len(messages)} messages")
                 return
 

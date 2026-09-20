@@ -66,11 +66,27 @@ def test_over_budget_trims_from_front_to_safe_boundary():
     ]
     a._trim_history(msgs)
     # Something was cut, the tail survived, and we start at a plain user msg.
-    assert 0 < len(msgs) < 5
+    assert 0 < len(msgs) < 6
     assert msgs[-1]["content"] == "the latest question"
-    assert msgs[0]["role"] == "user"
-    # And the kept suffix fits the budget.
-    assert sum(_estimate_msg_tokens(m) for m in msgs) <= a.history_token_budget
+
+    # A continuity bridge (if built) is a bounded additive note at the head;
+    # separate it from the kept conversation before the budget assertion.
+    def _is_bridge(m):
+        c = m.get("content")
+        if isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict) and "Context bridge" in (b.get("text") or ""):
+                    return True
+        return False
+
+    kept = [m for m in msgs if not _is_bridge(m)]
+    if kept:
+        assert kept[0]["role"] == "user"
+        assert sum(_estimate_msg_tokens(m) for m in kept) <= a.history_token_budget
+    # The bridge, when present, is small and bounded (max ~5 sentences).
+    for m in msgs:
+        if _is_bridge(m):
+            assert _estimate_msg_tokens(m) < 600
 
 
 def test_many_messages_within_budget_not_count_trimmed():
