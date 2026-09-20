@@ -30,6 +30,9 @@ from pathlib import Path
 # Files that are ALWAYS in the stable block, in this exact order.
 CORE_IDENTITY_FILES = ("SOUL.md",)
 LONG_TERM_MEMORY_FILE = "MEMORY.md"
+# Earned scar tissue — rides the stable prefix directly beneath the soul,
+# isolated so a soul edit cannot wipe earned lessons. Mutated only via bin/scar.
+SCARS_FILE = "SCARS.md"
 VISIONS_DIR = "visions"
 ACTIVE_VISION_FILE = "active_vision.txt"
 CONTEXT_SCOPE_FILE = "context_scope.json"
@@ -139,7 +142,7 @@ class MemoryManager:
           - Adding a new .md to config/ costs one cache write on the next call,
             then reads at 10% cost until it changes.
         """
-        excluded = set(CORE_IDENTITY_FILES) | {LONG_TERM_MEMORY_FILE}
+        excluded = set(CORE_IDENTITY_FILES) | {LONG_TERM_MEMORY_FILE, SCARS_FILE}
         no_palace = self._no_palace_mode()
         scope = self._load_context_scope()
         active = self._active_project_name()
@@ -231,6 +234,14 @@ class MemoryManager:
                 if no_palace:
                     content = _strip_palace_content(content)
                 parts.append(content)
+
+        # SCAR TISSUE — earned gates, directly beneath the soul, isolated from
+        # SOUL.md so a soul edit can never wipe lessons bought with failure.
+        scars_txt = self._read_file(self.config_dir / SCARS_FILE)
+        if scars_txt:
+            if no_palace:
+                scars_txt = _strip_palace_content(scars_txt)
+            parts.append(scars_txt)
 
         vision = self._load_active_vision()
         if vision:

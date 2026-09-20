@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#
+# THE GRAFT: turn a charted reef into a pilot's route. Takes a scar id, gathers
+# the verbatim wound cluster from the palace, and asks a NAKED prompt (no soul,
+# no memory, fresh eyes) to set up the best possible skill for <this>. The
+# draft NEVER self-installs — it lands as skills/DRAFT_*.md awaiting blessing.
+#
+# Usage:
+#   bin/graft S001
+#
+set -euo pipefail
+ROOT="${GALADRIEL_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+cd "$ROOT"
+PY="${GALADRIEL_PY:-python3}"
+[ -x "$PY" ] || PY=python3
+exec "$PY" -m harness.graft "$@"

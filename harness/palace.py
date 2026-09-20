@@ -763,6 +763,19 @@ async def add_drawer(
     Without `room`, behaviour is unchanged (mempalace falls back to its
     default room).
     """
+    # THE SCAR TISSUE: on a correction, scan for prior wounds of the same class
+    # BEFORE filing/mining (so the new drawer cannot self-match). Advisory only
+    # — detection failure must never block the filing itself.
+    scar_notice = ""
+    if origin == "correction" and content and content.strip():
+        try:
+            from . import scars as _scars
+            _n = _scars.scan_wound_class(content)
+            if _n:
+                scar_notice = "\n\n" + _n
+        except Exception as _e:
+            log.warning(f"scar scan skipped: {_e}")
+
     if not content or not content.strip():
         return "[palace add] empty content — nothing filed."
 
@@ -827,6 +840,7 @@ async def add_drawer(
         + (" — verified searchable now." if visible else
            " — ⚠ mined but NOT yet visible to in-process search; it will "
            "surface after the next restart. Do not rely on immediate recall.")
+        + scar_notice
     )
 
 

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#
+# THE SCAR TISSUE: promote / retire / list the prompt-riding gates earned by
+# compound failure. Hard cap 12 — at cap, promote REFUSES until one retires
+# (the equilibrium law). A scar is a gate, not a sermon: trigger → mandatory
+# check, provenance dates attached.
+#
+# Usage:
+#   bin/scar list
+#   bin/scar promote "Before <trigger> → <check>. (N incidents: <dates>)"
+#     (the active bearing — config/compass.json focused — is stamped automatically)
+#   bin/scar retire S001 "reason: stale / graduated to code guard <path>"
+#
+set -euo pipefail
+ROOT="${GALADRIEL_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+cd "$ROOT"
+PY="${GALADRIEL_PY:-python3}"
+[ -x "$PY" ] || PY=python3
+exec "$PY" -m harness.scars "$@"
