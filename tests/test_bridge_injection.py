@@ -60,3 +60,61 @@ def test_messages_to_text_never_inlines_images():
     txt = _messages_to_text(msgs)
     assert "ABCDEF" not in txt
     assert "[image]" in txt
+
+
+# ── THE FRESH-CASCADE TEST (added 2026-09-21) ─────────────────────────────
+# Every bridge observed in production so far fired while recovering from
+# earlier splat residue, so "works on a genuinely clean long cascade" was
+# still unproven. This test supplies a clean 60-turn conversation.
+
+def _fresh_conversation(n: int = 60) -> list:
+    msgs = []
+    for i in range(n):
+        if i % 2 == 0:
+            msgs.append({"role": "user", "content": (
+                f"Turn {i}: I want to talk about the memory palace design and how "
+                f"the compass heading scopes retrieval for project number {i}; "
+                f"please consider the tradeoffs carefully.")})
+        else:
+            msgs.append({"role": "assistant", "content": (
+                f"Turn {i}: Right — the palace stores verbatim drawers and the "
+                f"temporal knowledge graph tracks relations over time. For case "
+                f"{i} I would weigh recall latency against recall precision and "
+                f"prefer scoped search over a wide cast.")})
+    return msgs
+
+
+def test_fresh_cascade_bridge_is_coherent():
+    msgs = _fresh_conversation(60)
+    b = build_bridge(msgs)
+    if not b:
+        assert b is None  # documented degrade when sumy is absent
+        return
+    assert isinstance(b, str) and b.strip(), "fresh-cascade bridge was empty"
+    assert len(b) < len(_messages_to_text(msgs)), "bridge did not compress"
+    assert "base64" not in b.lower()
+    assert not b.strip().startswith("{"), "bridge looks like a JSON dump"
+    assert any(w in b.lower() for w in ("palace", "memory", "compass", "retriev")), \
+        f"bridge did not reference the subject matter: {b[:200]!r}"
+
+
+def test_bridge_survives_rebridging():
+    msgs = _fresh_conversation(40)
+    b1 = build_bridge(msgs)
+    if not b1:
+        return
+    with_bridge = inject_bridge(msgs, b1)
+    b2 = build_bridge(with_bridge)
+    assert b2 is None or isinstance(b2, str)
+    if b2:
+        assert b2.strip(), "re-bridge produced an empty string"
+
+
+def test_input_image_variants_also_placeholder():
+    for key in ("image_url", "input_image"):
+        msgs = [{"role": "user", "content": [
+            {"type": "text", "text": "look at this picture of the architecture diagram"},
+            {"type": key, "image_url": "data:image/png;base64," + "B" * 2048},
+        ]}]
+        txt = _messages_to_text(msgs)
+        assert "B" * 2048 not in txt, f"{key} payload leaked into bridge text"
