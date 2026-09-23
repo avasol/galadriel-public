@@ -86,7 +86,7 @@ def get_economy_summary_model(provider_name: str) -> str:
             data = json.loads(resp.read().decode())
             ranked = data.get("ranked", [])
             if ranked:
-                chosen = ranked[0]["model_id"]
+                chosen = ranked[0].get("model_id") or ranked[0].get("id")
                 _ECONOMY_MODEL_CACHE[prov] = (now, chosen)
                 log.info(f"Compaction: resolved economy model via Palantír: {prov} -> {chosen}")
                 return chosen
