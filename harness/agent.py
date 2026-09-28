@@ -497,6 +497,73 @@ def _build_cached_tools() -> list[dict]:
     return cached
 
 
+# THE FADING SIGHT: an image block living in the live thread is re-sent to the
+# API on EVERY call for the life of the conversation — a looked-at screenshot
+# costs its bytes (or its flat 800-token estimate) on every turn, long after it
+# is relevant. Beyond a small recent window, replace the payload with a short
+# text placeholder naming the attachment. The journal keeps the full record;
+# only the live thread is disciplined. Sibling of the rehydrate pass (shape):
+# both keep the working window honest without touching the durable store.
+_IMAGE_LIVE_WINDOW = 4  # messages whose images stay live (~the last turn or two)
+_IMAGE_BLOCK_TYPES = ("image", "image_url", "input_image")
+
+
+def _image_age_placeholder(block: dict) -> dict:
+    """The honest text that replaces an aged-out image payload."""
+    src = block.get("source") or block.get("image_url") or {}
+    if isinstance(src, str):
+        media = "image"
+    else:
+        media = src.get("media_type") or src.get("type") or "image"
+    return {
+        "type": "text",
+        "text": (
+            f"[{media} seen earlier in this conversation — no longer re-sent to "
+            f"save context; the full record is retained in the journal]"
+        ),
+    }
+
+
+def _age_out_stale_images(messages: list, keep_recent: int = _IMAGE_LIVE_WINDOW) -> int:
+    """Age out image payloads older than the last ``keep_recent`` messages.
+
+    Walks the message list and, for every message beyond the recent window,
+    replaces each image block — at the top level of a content list AND nested
+    inside a ``tool_result`` (where the look/generate tools put them) — with a
+    short text placeholder. Images in the most recent ``keep_recent`` messages
+    are left intact, so the mind can still see what it just looked at.
+
+    Idempotent (a replaced block is text and is skipped next time), cheap, and
+    never raises. Mutates ``messages`` in place. Returns the number of image
+    payloads aged out.
+    """
+    if not messages:
+        return 0
+    aged = 0
+    cutoff = max(0, len(messages) - keep_recent)
+    for idx in range(cutoff):
+        msg = messages[idx]
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for j, block in enumerate(content):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") in _IMAGE_BLOCK_TYPES:
+                content[j] = _image_age_placeholder(block)
+                aged += 1
+            elif block.get("type") == "tool_result":
+                inner = block.get("content")
+                if isinstance(inner, list):
+                    for k, ib in enumerate(inner):
+                        if isinstance(ib, dict) and ib.get("type") in _IMAGE_BLOCK_TYPES:
+                            inner[k] = _image_age_placeholder(ib)
+                            aged += 1
+    return aged
+
+
 def _attach_trailing_cache_control(messages: list) -> list:
     """Return a shallow copy of `messages` with cache_control on the last block.
 
@@ -1128,6 +1195,18 @@ class GaladrielAgent:
                 log.warning(
                     f"_strip_orphan_tool_results: removed {stripped} orphan "
                     f"tool_result block(s) before API call (channel={channel_id})"
+                )
+
+            # THE FADING SIGHT: age out image payloads beyond the recent window.
+            # An image in live history is re-sent on every call for the life of
+            # the conversation; recent images stay live, older ones become a
+            # short placeholder. The journal keeps the full record.
+            _aged = _age_out_stale_images(messages)
+            if _aged:
+                log.info(
+                    f"_age_out_stale_images: aged out {_aged} image payload(s) "
+                    f"beyond the recent window before API call "
+                    f"(channel={channel_id})"
                 )
 
             log.info(f"API call with {len(messages)} messages, last role: {messages[-1]['role']}")
