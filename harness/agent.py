@@ -1030,6 +1030,7 @@ class GaladrielAgent:
         # archive marker + glass-prompt trace. Zero prompt expense.
         import uuid as _uuid
         from .fresh_narrative import shadow_observe, archive_cascade
+        from . import inflight as _inflight
         _signal_text = user_message if isinstance(user_message, str) else \
             " ".join(b.get("text", "") for b in user_message
                      if isinstance(b, dict) and b.get("type") == "text")
@@ -1051,8 +1052,32 @@ class GaladrielAgent:
                 "text": _render_recovery_advisory(recovery_tag),
             })
 
+        # THE UNLOST TURN: if a PRIOR turn in this channel died mid-work
+        # without finishing, say so — with the trail and its on-disk path —
+        # so the mind never again claims it "barely started" when it ran for a
+        # long time. Fires once per dead turn, then self-silences.
+        try:
+            _stale = _inflight.stale_turn(str(self.memory.memory_dir), channel_id)
+            if _stale:
+                system_blocks.append({
+                    "type": "text",
+                    "text": _inflight.render_advisory(_stale),
+                })
+                _inflight.mark_reported(_stale["_path"])
+        except Exception as _e:
+            log.debug("inflight advisory failed (non-fatal): %s", _e)
+
         max_tokens_retries = 0  # Track consecutive max_tokens hits
         request_too_large_retries = 0  # Track consecutive 413 payload hits
+
+        # THE UNLOST TURN: open a live checkpoint on disk BEFORE the first
+        # provider call, so a turn that dies (max_tokens cascade, crash, a
+        # hollow end) leaves a trace the next turn can surface.
+        _user_head = user_message if isinstance(user_message, str) else "[multimodal message]"
+        _flight = _inflight.InflightTurn(
+            str(self.memory.memory_dir), channel_id, _trace_turn,
+            _user_head, model=self.model).begin()
+        _tool_actions = 0  # actions performed this turn (drives the hollow-end note)
 
         while True:
             # Guard against empty message list
@@ -1172,6 +1197,30 @@ class GaladrielAgent:
                 # the literal "(no response)" which got piped verbatim to
                 # Discord and confused the user.
                 final_text = "\n".join(text_parts).strip() if text_parts else ""
+                # THE HOLLOW END: end_turn with NO text after the mind did real
+                # work is not "nothing to add" — it is a turn that closed
+                # without a word, and dressing it as a polite non-answer masks
+                # a dead turn. Say what actually happened.
+                _hollow = (not final_text) and _tool_actions > 0
+                if _hollow:
+                    try:
+                        _flight.incident(
+                            f"hollow end_turn: {_tool_actions} action(s), no text")
+                        _flight.finish(completed=False, note="hollow end_turn")
+                    except Exception:
+                        pass
+                    final_text = (
+                        "\u26a0\ufe0f *(my turn closed without a word — I ran "
+                        f"{_tool_actions} action(s) but produced no reply text. "
+                        "That is a fault, not a deliberate silence. Ask me to "
+                        "summarise what I did and I will reconstruct it from the "
+                        "work log.)*"
+                    )
+                else:
+                    try:
+                        _flight.finish(completed=True)
+                    except Exception:
+                        pass
                 if final_text and self.show_thinking == "digest":
                     digest = _thinking_digest(turn_thinking)
                     if digest:
@@ -1245,6 +1294,11 @@ class GaladrielAgent:
                 if max_tokens_retries >= 3:
                     # We've tried 3 times — give up gracefully.
                     # Hard reset the conversation so next message works.
+                    try:
+                        _flight.finish(completed=False,
+                                       note="max_tokens cascade (gave up after 3)")
+                    except Exception:
+                        pass
                     self._hard_reset(messages, user_message)
                     suffix = (
                         "\n\n*(My response was too long and I could not recover after multiple attempts. "
@@ -1311,6 +1365,8 @@ class GaladrielAgent:
                                         "tool_use_id": tool_id,
                                         "content": f"[BLOCKED] Denied: {command}",
                                     })
+                                    _flight.step(tool_name, f"[BLOCKED] Denied: {command}"[:160], ok=False)
+                                    _tool_actions += 1
                                     continue
                             else:
                                 tool_results.append({
@@ -1318,6 +1374,8 @@ class GaladrielAgent:
                                     "tool_use_id": tool_id,
                                     "content": f"[BLOCKED] Red-tier, no approval callback: {command}",
                                 })
+                                _flight.step(tool_name, f"[BLOCKED] Red-tier: {command}"[:160], ok=False)
+                                _tool_actions += 1
                                 continue
 
                     result = await execute_tool(
@@ -1334,6 +1392,10 @@ class GaladrielAgent:
                         "tool_use_id": tool_id,
                         "content": result,
                     })
+                    _flight.step(tool_name,
+                                 result[:160] if isinstance(result, str) else "",
+                                 ok=not (isinstance(result, str) and result.startswith(("[BLOCKED]", "[error]"))))
+                    _tool_actions += 1
 
                 messages.append({"role": "user", "content": tool_results})
                 # Loop back to send tool results to the API
