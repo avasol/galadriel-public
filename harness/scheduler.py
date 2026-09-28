@@ -16,6 +16,7 @@ Ambient reflection is opt-out: set GALADRIEL_REFLECTION=0 to disable.
 """
 
 import asyncio
+import re
 from .ambient import AmbientState
 import logging
 import json
@@ -42,6 +43,11 @@ MORNING_TIME = time(9, 10)
 GOODNIGHT_TIME = time(21, 0)
 # Ambient reflection slots (workdays only, silent — palace-only side effects)
 REFLECTION_TIMES = (time(11, 0), time(14, 0), time(17, 0), time(20, 0))
+
+# THE EAGER WAKE: the one-shot wake speaks a one-liner the instant the cycle
+# is confirmed clean, BEFORE its agent turn runs. The grace below lets the
+# Discord gateway/DM channel settle after boot.
+WAKE_GRACE_SECONDS = 8
 
 # Valid heartbeat intervals in minutes
 VALID_INTERVALS = [5, 10, 20, 30]
@@ -318,6 +324,28 @@ class Scheduler:
 
     # ── One-shot Wake Loop ───────────────────────────────────────
 
+    @staticmethod
+    def _wake_topic(prompt: str) -> str:
+        """Extract the TOPIC slug from a '[SYSTEM:WAKE:<TOPIC>] ...' prompt."""
+        m = re.search(r"\[SYSTEM:WAKE:([^\]]+)\]", prompt or "")
+        return m.group(1).strip() if m else ""
+
+    def _render_wake_eager(self, prompt: str) -> str:
+        """THE EAGER WAKE — the one-liner spoken on boot, BEFORE the agent turn
+        runs. Its whole job is to collapse the window in which a loading wake is
+        indistinguishable from a wake that never came back.
+
+        Deliberately says only what is certainly true at boot — the cycle
+        completed, the mind is intact, work is resuming — and never claims the
+        work is done. The turn's own report follows as a second message.
+        """
+        topic = self._wake_topic(prompt)
+        tail = f" Resume: {topic}." if topic else ""
+        return (
+            "The cycle is clean and the mind is intact; I am back and working."
+            + tail + " A fuller word follows the moment I have something to report."
+        )
+
     async def _wake_loop(self):
         """Fire the armed one-shot wake exactly once, then clear it.
 
@@ -331,11 +359,23 @@ class Scheduler:
         """
         try:
             # Small grace so the Discord gateway/DM channel is ready after boot.
-            await asyncio.sleep(8)
+            await asyncio.sleep(WAKE_GRACE_SECONDS)
             prompt = self.pending_wake
             if not prompt:
                 return
             log.info("One-shot wake FIRING.")
+            # THE EAGER WAKE: speak FIRST, then work. A wake whose agent turn
+            # runs for minutes is, from the far side, indistinguishable from a
+            # wake that never came back — silence with no trace. So we deliver an
+            # immediate one-liner the moment the cycle is confirmed, then let the
+            # turn run; its report lands as a SECOND message. The eager line is
+            # advisory and never the record — if it fails we log and carry on (a
+            # missing greeting must not cost the real report).
+            try:
+                await self._send_to_discord(self._render_wake_eager(prompt), channel_id="wake")
+                log.info("One-shot wake: eager line delivered.")
+            except Exception as _e:
+                log.warning(f"One-shot wake: eager line failed (non-fatal): {_e}")
             ok = await self._send_agent_message(prompt=prompt, channel_id="wake")
             if ok:
                 # Delivered (or legitimately silent) — clear so it never repeats.
