@@ -227,11 +227,35 @@ def _serialize_content(content):
 
 
 def _estimate_msg_tokens(msg) -> int:
-    """Cheap token estimate for one message dict: len(JSON)/4. We need
+    """Rough token estimate for one API-format message.
+
+    Text: JSON length / 4 (4 chars ≈ 1 token).
+    Images: each base64 image_url / image block is counted as a FLAT
+    800 tokens regardless of actual size — the real cost is billed by
+    pixel-area by the API, but for RETENTION decisions (should this
+    message be kept?) a fixed cost avoids the pathological case where a
+    single 400KB screenshot drives the char estimate to ~100k tokens and
+    triggers an immediate trim of the entire history.
+
+    Deliberately cheap — retention decisions need the right order of
     magnitude, not tokenizer precision. Never raises."""
     try:
-        import json as _json
-        return max(1, len(_json.dumps(msg, default=str)) // 4)
+        import json as _json, re as _re
+        # Serialize to JSON but replace base64 image data with a fixed
+        # sentinel so the char-count isn't dominated by raw image bytes.
+        raw = _json.dumps(msg, default=str)
+        # Strip base64 data URLs: "data:image/...;base64,<payload>"
+        stripped = _re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=]+',
+                           'IMAGE_PLACEHOLDER', raw)
+        # Also strip bare base64 blocks (Anthropic vision API format):
+        # "data":"<long-base64>" inside image source blocks
+        stripped = _re.sub(r'"data":\s*"[A-Za-z0-9+/=]{100,}"',
+                           '"data": "IMAGE_PLACEHOLDER"', stripped)
+        text_tokens = max(1, len(stripped) // 4)
+        # Each IMAGE_PLACEHOLDER in stripped = one image removed.
+        # Flat cost: 800 tokens ≈ medium-resolution screenshot (vision pricing).
+        image_tokens = stripped.count('IMAGE_PLACEHOLDER') * 800
+        return text_tokens + image_tokens
     except Exception:
         return max(1, len(str(msg)) // 4)
 

@@ -188,3 +188,59 @@ def test_estimate_never_raises_on_junk():
         pass
     assert _estimate_msg_tokens({"role": "user", "content": Weird()}) >= 1
     assert _estimate_msg_tokens(None) >= 1
+
+
+# ── image handling ──────────────────────────────────────────────────
+# The naive len(JSON)/4 estimate counted a 400KB screenshot as ~100k tokens
+# (the raw base64 blob ÷ 4), which could trigger an immediate trim of the
+# whole history. Images now cost a FLAT 800 tokens each — retention needs the
+# right order of magnitude, not pixel-accurate vision pricing.
+
+def test_image_message_not_bloated():
+    """Base64 images must not drive the token estimate into the millions.
+    A 400KB image should estimate at ~800 tokens (the flat image cost), not
+    ~100,000 (the raw base64 char count / 4)."""
+    import base64
+    fake_image = base64.b64encode(b"X" * 400_000).decode()
+    msg = {
+        "role": "user",
+        "content": [
+            {"type": "image", "source": {
+                "type": "base64", "media_type": "image/png", "data": fake_image}},
+            {"type": "text", "text": "Here is a screenshot of the UI."},
+        ],
+    }
+    est = _estimate_msg_tokens(msg)
+    # Far below the raw base64 estimate (~100k) ...
+    assert est < 5_000, f"Image estimate too large: {est} — base64 bloat not stripped"
+    # ... but at least the flat image cost.
+    assert est >= 800, f"Image estimate too small: {est}"
+
+
+def test_history_with_images_not_aggressively_trimmed():
+    """77 messages (some with images) must NOT be trimmed when the text
+    content fits the budget — the field incident where a single screenshot
+    triggered 'cutting 74 of 77 messages'."""
+    import base64
+    fake_image = base64.b64encode(b"X" * 400_000).decode()
+
+    def _img_msg():
+        return {"role": "user", "content": [
+            {"type": "image", "source": {
+                "type": "base64", "media_type": "image/png", "data": fake_image}},
+            {"type": "text", "text": "Here is the game UI screenshot."},
+        ]}
+
+    a = _bare_agent(budget=140_000, hard_cap=1000)
+    msgs = []
+    for i in range(67):
+        msgs.append(_user(f"Message {i}"))
+        msgs.append(_assistant(f"Response {i}"))
+    for _ in range(10):
+        msgs.append(_img_msg())
+    before_len = len(msgs)
+    a._trim_history(msgs)
+    assert len(msgs) >= before_len - 5, (
+        f"Too aggressive: trimmed from {before_len} to {len(msgs)} messages "
+        f"with images in history"
+    )
