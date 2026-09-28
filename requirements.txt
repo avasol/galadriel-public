@@ -11,7 +11,8 @@ tzdata
 # falls back to the system browser if it (or its OS backend) is unavailable.
 # Installed per-OS in CI, not here, to avoid Linux GTK bundling complexity.
 
-# Optional: local, zero-API extractive summarization for trim continuity
-# (harness/bridge.py). Pure Python — no GPU, no model downloads. If absent,
-# the trim bridge degrades to a silent drop; a trim never breaks a live turn.
-sumy
+# Trim continuity bridge (harness/bridge.py) — local, zero-API extractive
+# summarization. Implemented in PURE STDLIB (harness/summarize.py): the same
+# LexRank algorithm with no third-party dependency, so it rides the one
+# platform-agnostic Mind bundle on every OS. No sumy, no nltk (nltk's compiled
+# `regex` cannot ship in a single-arch bundle).

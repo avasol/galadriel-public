@@ -1,22 +1,33 @@
 """Conversation bridge — local, zero-API-cost summarization for trim continuity.
 
-When _trim_history drops messages from the front of a conversation, those
-messages are lost forever. This module produces a short "bridge" summary —
-a few sentences of what was discussed in the dropped slice — so the agent
-retains continuity without burning API tokens on summarization.
+When history is trimmed from the front of a conversation, those messages leave
+the working window for good. This module produces a short "bridge" summary — a
+few sentences of what was discussed in the dropped slice — and injects it at the
+head of the surviving conversation, so the mind keeps its continuity across the
+cut without spending a single API token on summarizing.
 
-Uses sumy LexRank (extractive summarization) — pure Python, no GPU, no API key,
-pip-installable anywhere. The bridge is not beautiful poetry; it is factual
-continuity at zero marginal cost.
+IMPLEMENTATION NOTE (why this has no third-party dependencies)
+--------------------------------------------------------------
+An earlier version used sumy + nltk. That was replaced deliberately: nltk
+requires `regex`, a COMPILED platform-specific extension, and the Mind bundle
+shipped to bodies is a SINGLE platform-agnostic zip serving Windows, Linux and
+macOS. A compiled dependency cannot ride that zip — it would work on one
+platform and break on two, and carrying it in a signed Shell would mean buying a
+code-sign for a summarizer.
 
-Design constraint: must run on a laptop with no GPU and no model downloads.
-sumy + nltk satisfies this. BOTH sumy and an optional secret-redactor are
-treated as OPTIONAL: if either is absent the bridge degrades to a silent drop,
-because a trim must never break a live turn.
+So the summarizer is implemented in pure stdlib (harness/summarize.py): the same
+LexRank algorithm, a few small functions, no compiled parts. The bridge is
+portable by construction — it runs identically on every platform with nothing
+beyond the standard library.
+
+Design constraint: this must run on a user's laptop — no GPU, no model
+downloads, no network. Pure stdlib satisfies that permanently.
 """
 
 import logging
 from typing import Optional
+
+from .summarize import summarize as _summarize
 
 log = logging.getLogger("galadriel.bridge")
 
@@ -27,48 +38,18 @@ try:  # pragma: no cover - trivial import guard
 except Exception:  # noqa: BLE001
     _redact_secrets = None
 
-# Lazy imports — sumy is only imported when bridging actually happens
-_SUMY_LOADED = False
-_PARSER = None
-_LEX_RANK = None
-_TOKENIZER = None
-
-
-def _ensure_sumy() -> bool:
-    """Lazy-load sumy on first use. Returns True if available."""
-    global _SUMY_LOADED, _PARSER, _LEX_RANK, _TOKENIZER
-    if _SUMY_LOADED:
-        return _PARSER is not None
-
-    try:
-        from sumy.parsers.plaintext import PlaintextParser
-        from sumy.nlp.tokenizers import Tokenizer
-        from sumy.summarizers.lex_rank import LexRankSummarizer
-        import nltk
-
-        # Ensure punkt is available (silent)
-        try:
-            nltk.data.find("tokenizers/punkt_tab")
-        except LookupError:
-            nltk.download("punkt_tab", quiet=True)
-
-        _PARSER = PlaintextParser
-        _LEX_RANK = LexRankSummarizer
-        _TOKENIZER = Tokenizer
-        _SUMY_LOADED = True
-        log.info("bridge: sumy LexRank loaded (local, zero-API)")
-        return True
-    except Exception as e:  # ImportError, LookupError, download failure
-        log.warning(f"bridge: sumy unavailable ({e}) — trim bridges disabled")
-        _SUMY_LOADED = True  # Don't retry
-        return False
+# Minimum text worth summarizing. Below this the bridge would be noise.
+_MIN_TEXT = 200
 
 
 def _messages_to_text(messages: list) -> str:
-    """Convert message list to plain text for sumy, with speaker labels.
+    """Convert a message list to plain text for the summarizer, with speakers.
 
-    Images are NEVER inlined (a base64 blob would poison the summary); they
-    become a short '[image]' placeholder. Tool results are truncated to a head.
+    Images are NEVER inlined except as a short '[image]' placeholder — a base64
+    blob would poison the summary AND cost an absurd number of tokens. Tool
+    results are truncated to a head so a large payload never dominates.
+    Non-dict entries are skipped rather than raising (defensive: a stray string
+    from an older bug must not break a bridge).
     """
     lines = []
     for msg in messages:
@@ -114,53 +95,31 @@ def _messages_to_text(messages: list) -> str:
 def build_bridge(messages: list, max_sentences: int = 5) -> Optional[str]:
     """Build a continuity bridge from a list of messages about to be dropped.
 
-    Returns a string like "💬 ..." or None when sumy is unavailable or the
-    input is too short to summarize.
+    Returns a string like "💬 ..." or None when the slice is too short to
+    summarize usefully. Never raises — a trim must never break a live turn.
     """
     if not messages or len(messages) < 3:
         return None
 
-    if not _ensure_sumy():
-        return None
-
     text = _messages_to_text(messages)
-    if len(text) < 200:
+    if len(text) < _MIN_TEXT:
         return None
 
     try:
-        parser = _PARSER.from_string(text, _TOKENIZER("english"))
-        summarizer = _LEX_RANK()
-        sentence_count = min(max_sentences, len(parser.document.sentences))
-        if sentence_count < 1:
+        summary = _summarize(text, max_sentences)
+        if not summary:
             return None
 
-        extracted = summarizer(parser.document, sentence_count)
-        if not extracted:
-            return None
-
-        # Sort extracted sentences by their original position for coherence
-        sentences = sorted(
-            extracted,
-            key=lambda s: text.index(str(s)) if str(s) in text else 0,
-        )
-        bridge_lines = [str(s).strip() for s in sentences if str(s).strip()]
-        if not bridge_lines:
-            return None
-
-        raw_bridge = "💬 " + " ".join(bridge_lines)
+        bridge = f"💬 {summary}"
         if _redact_secrets is not None:
             try:
-                redacted = _redact_secrets(raw_bridge)
-                raw_bridge = redacted[0] if isinstance(redacted, tuple) else redacted
+                redacted = _redact_secrets(bridge)
+                bridge = redacted[0] if isinstance(redacted, tuple) else redacted
             except Exception:  # noqa: BLE001 - redaction must never break a trim
                 pass
-        log.info(
-            f"bridge: built {len(bridge_lines)}-sentence bridge "
-            f"({len(text)} chars → {len(raw_bridge)} chars)"
-        )
-        return raw_bridge
-
-    except Exception as e:
+        log.info(f"bridge: built bridge ({len(text)} chars → {len(bridge)} chars)")
+        return bridge
+    except Exception as e:  # noqa: BLE001 — summarization must never break a trim
         log.warning(f"bridge: summarization failed: {e}")
         return None
 
@@ -168,12 +127,13 @@ def build_bridge(messages: list, max_sentences: int = 5) -> Optional[str]:
 def inject_bridge(messages: list, bridge_text: str) -> list:
     """Prepend a bridge message to the conversation.
 
-    The bridge is injected as a synthetic user message so the API accepts it
-    (assistant → user → assistant alternation is preserved).
+    The bridge is injected as a synthetic user message (a text block) so the
+    API accepts it and the user→assistant alternation is preserved.
 
-    SAFETY: returns the message list UNCHANGED if the input is malformed — a
-    bad bridge must never corrupt a live thread. The caller assigns the result
-    (it does NOT splice in place).
+    SAFETY: returns the message list UNCHANGED if either argument is malformed
+    — a bad bridge must never corrupt a live thread. The caller assigns the
+    result; this function never splices in place (splicing a str is exactly the
+    bug class this guards against).
     """
     if not bridge_text or not isinstance(bridge_text, str):
         return messages
