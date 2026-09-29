@@ -707,6 +707,22 @@ class GaladrielAgent:
         _cap = os.environ.get("AGENT_HISTORY_MAX_MESSAGES")
         self.history_max_messages = int(_cap) if _cap and _cap.isdigit() else 1000
 
+        # THE FROZEN PREFIX (2026-09-29). The system prompt is the FIRST part
+        # of the checked prefix: rebuilding it every turn (a live clock + a
+        # growing daily log) invalidates EVERY thinking block in the
+        # conversation (Anthropic preserved-thinking, 2026-10-01) AND re-writes
+        # the prompt cache every turn. When enabled, the system is built ONCE
+        # per session and reused byte-identically, so the prefix is append-only.
+        # A TTL bounds staleness (the volatile tail — clock, daily log, wake-up —
+        # is refreshed when it expires). Default OFF: the live path is unchanged.
+        self.frozen_prefix = os.environ.get("GALADRIEL_FROZEN_PREFIX", "1") == "1"
+        try:
+            self._frozen_prefix_ttl = float(
+                os.environ.get("GALADRIEL_FROZEN_PREFIX_TTL_S", "21600"))
+        except ValueError:
+            self._frozen_prefix_ttl = 21600.0
+        self._frozen_system: dict = {}  # channel -> (built_at_monotonic, blocks)
+
         # THE UNBROKEN THREAD: verbatim conversation journal, federated into
         # palace recall. Append-only JSONL under memory/journal/.
         self.journal = ConversationJournal(memory_dir)
@@ -1109,6 +1125,30 @@ class GaladrielAgent:
             log.info(f"thinking dialect: {self.model} declines thinking — dropped")
             return True
         return False
+
+    def _system_blocks_cached(self, channel_id: str, query_signals) -> list:
+        """THE FROZEN PREFIX.
+
+        Returns the system blocks for this turn. When GALADRIEL_FROZEN_PREFIX
+        is OFF (default) this is exactly build_system_blocks(query_signals) —
+        byte-for-byte the live path. When ON, the system is built once per
+        session and reused (a shallow copy, so the caller may append a rare
+        advisory without mutating the frozen base), refreshing only after the
+        TTL so the volatile tail cannot go stale for long sessions.
+        """
+        if not self.frozen_prefix:
+            return self.memory.build_system_blocks(query_signals)
+        import time as _time
+        key = channel_id
+        now = _time.monotonic()
+        rec = self._frozen_system.get(key)
+        if rec is None or (now - rec[0]) >= self._frozen_prefix_ttl:
+            blocks = self.memory.build_system_blocks(query_signals)
+            self._frozen_system[key] = (now, blocks)
+        else:
+            blocks = rec[1]
+        # Shallow copy so appending advisories never mutates the frozen base.
+        return [dict(b) for b in blocks]
 
     @with_status
     async def respond(self, user_message: str | list, channel_id: str = "default") -> str:
@@ -1541,6 +1581,7 @@ class GaladrielAgent:
         # A fresh channel starts with no recovery advisory — clear stale state.
         self._post_recovery_archive_tag.pop(channel_id, None)
         self._output_ceiling_streak.pop(channel_id, None)
+        self._frozen_system.pop(channel_id, None)
 
     async def pop_and_archive_history(self, channel_id: str = "default") -> int:
         """Archive the channel's conversation to the palace, then clear it.

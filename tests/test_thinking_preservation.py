@@ -91,10 +91,12 @@ def test_prefix_mismatch_named_only_by_cause():
         Exception("unexpected tool_use_id found in tool_result blocks"))
 
 
-def test_recovery_mode_defaults_to_error(monkeypatch):
+def test_recovery_mode_defaults_to_drop_block(monkeypatch):
+    # The Oct-1 posture (2026-09-29): recover automatically from a named
+    # prefix-mismatch 400 so a Claude-thinking turn does not die on the change.
     monkeypatch.delenv("AGENT_PRESERVED_THINKING_RECOVERY", raising=False)
-    assert recovery_mode() == "error"
-    monkeypatch.setenv("AGENT_PRESERVED_THINKING_RECOVERY", "drop_block")
     assert recovery_mode() == "drop_block"
+    monkeypatch.setenv("AGENT_PRESERVED_THINKING_RECOVERY", "error")
+    assert recovery_mode() == "error"   # explicit opt-out still honoured
     monkeypatch.setenv("AGENT_PRESERVED_THINKING_RECOVERY", "nonsense")
-    assert recovery_mode() == "error"  # never trust a typo into a rewrite path
+    assert recovery_mode() == "drop_block"  # a typo cannot disable the posture

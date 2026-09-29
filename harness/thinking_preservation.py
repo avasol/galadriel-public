@@ -30,12 +30,12 @@ path on its own:
 
 Two modes mirror the API's own choice:
 
-  * ``"drop_block"`` (opt-in) — after a named prefix-mismatch 400, strip the
-    thinking blocks and retry ONCE.  Never silent: it is logged, because
+  * ``"drop_block"`` (default, the Oct-1 posture) — after a named
+    prefix-mismatch 400, strip the thinking blocks and retry ONCE.  Never silent: it is logged, because
     swallowing a 400 the caller could have fixed is itself a dishonesty
     ("Don't hide the 400.").
-  * ``"error"`` (default) — never rewrite on the fly; raise the honest error
-    so the fault is seen, not masked.
+  * ``"error"`` — never rewrite on the fly; raise the honest error so the
+    fault is seen, not masked.
 
 Opt in with::
 
@@ -129,10 +129,9 @@ def strip_thinking_blocks(messages: list) -> tuple[list, int]:
 def recovery_mode() -> str:
     """The configured mismatch behaviour: ``"error"`` (default) or ``"drop_block"``.
 
-    Default is ``"error"`` — never rewrite the caller's history on our own
-    initiative.  A human opts into ``"drop_block"`` to have the harness drop
-    the invalid blocks and retry once.
+    Default (2026-09-29, the Oct-1 posture) is ``"drop_block"`` — drop the
+    invalid blocks and retry once. Set ``"error"`` to never rewrite.
     """
     import os
-    mode = (os.environ.get("AGENT_PRESERVED_THINKING_RECOVERY") or "error").strip().lower()
-    return mode if mode in ("error", "drop_block") else "error"
+    mode = (os.environ.get("AGENT_PRESERVED_THINKING_RECOVERY") or "drop_block").strip().lower()
+    return mode if mode in ("error", "drop_block") else "drop_block"
