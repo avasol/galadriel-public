@@ -695,6 +695,11 @@ class GaladrielAgent:
         # {"type":"adaptive"}; some reject thinking entirely. Never a
         # hardcoded model table — the API corrects us once, we remember.
         self._thinking_modes: dict = {}
+        # THE SUMMARIZED DISPLAY: ask the API to RETURN the reasoning text.
+        # Without it, thinking blocks arrive with EMPTY text on the current
+        # Claude family, so the thinking-bubble UI has nothing to show.
+        # Per-model, learned OFF on a 400 in case an older model rejects it.
+        self._summarized_display: dict = {}
         # Discord surfacing: "digest" (spoiler-fold) | "off"
         self.show_thinking = os.environ.get("AGENT_SHOW_THINKING", "off")
 
@@ -1104,8 +1109,14 @@ class GaladrielAgent:
         if mode is None:
             return None
         if mode == "adaptive":
-            return {"type": "adaptive"}
-        return {"type": "enabled", "budget_tokens": self.thinking_budget}
+            p = {"type": "adaptive"}
+        else:
+            p = {"type": "enabled", "budget_tokens": self.thinking_budget}
+        # THE SUMMARIZED DISPLAY (2026-09-29): without it the provider returns
+        # the thinking block's text EMPTY; with it, the reasoning is readable.
+        if self._summarized_display.get(self.model, True):
+            p["display"] = "summarized"
+        return p
 
     def _adapt_thinking_dialect(self, err) -> bool:
         """Learn from a thinking-dialect rejection. Returns True if the call
@@ -1119,6 +1130,11 @@ class GaladrielAgent:
                 and current == "enabled"):
             self._thinking_modes[self.model] = "adaptive"
             log.info(f"thinking dialect: {self.model} speaks adaptive — retrying")
+            return True
+        if ("display" in msg and "summarized" in msg
+                and self._summarized_display.get(self.model, True)):
+            self._summarized_display[self.model] = False
+            log.info(f"thinking display: {self.model} rejects summarized — dropping display")
             return True
         if "thinking" in msg and "not supported" in msg and current is not None:
             self._thinking_modes[self.model] = None
