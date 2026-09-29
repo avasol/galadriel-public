@@ -30,6 +30,12 @@ from datetime import datetime
 from pathlib import Path
 from .response_status import with_status, with_stream_status, record as record_response_status
 from .providers import make_provider
+from .thinking_preservation import (
+    replaying_thinking as _replaying_thinking,
+    is_prefix_mismatch_error as _is_prefix_mismatch_error,
+    strip_thinking_blocks as _strip_thinking_blocks,
+    recovery_mode as _tp_recovery_mode,
+)  # THE PRESERVED-THINKING GUARD (Anthropic 2026-10-01)
 from .bridge import build_bridge as _build_trim_bridge, inject_bridge as _inject_trim_bridge
 from .memory import MemoryManager
 from .journal import ConversationJournal
@@ -1160,6 +1166,7 @@ class GaladrielAgent:
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
         request_too_large_retries = 0  # Track consecutive 413 payload hits
+        thinking_mismatch_retries = 0  # Track preserved-thinking 400s (max 1)
 
         # THE UNLOST TURN: open a live checkpoint on disk BEFORE the first
         # provider call, so a turn that dies (max_tokens cascade, crash, a
@@ -1233,6 +1240,24 @@ class GaladrielAgent:
                     response = await self.provider.complete(
                         **call_kwargs, thinking=self._thinking_param())
             except Exception as e:
+                # THE PRESERVED-THINKING GUARD (Anthropic 2026-10-01): a
+                # client-side edit to an earlier turn invalidates every
+                # later thinking block; the API answers 400 (or drops) per
+                # thinking.block_binding.prefix_mismatch_behavior. Claim the
+                # cause ONLY when the error NAMES it, and act ONLY when a
+                # human opted into drop_block — else the honest 400 surfaces.
+                if (thinking_mismatch_retries < 1
+                        and _is_prefix_mismatch_error(e)
+                        and _replaying_thinking(messages)
+                        and _tp_recovery_mode() == "drop_block"):
+                    thinking_mismatch_retries += 1
+                    _new_msgs, _removed = _strip_thinking_blocks(messages)
+                    messages[:] = _new_msgs
+                    log.warning(
+                        "preserved-thinking prefix mismatch — dropped %d "
+                        "thinking block(s) from replayed history and retrying "
+                        "(AGENT_PRESERVED_THINKING_RECOVERY=drop_block)", _removed)
+                    continue
                 if _is_request_too_large_error(e) and request_too_large_retries < 3:
                     request_too_large_retries += 1
                     log.warning(
