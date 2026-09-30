@@ -51,7 +51,7 @@ file is used by both the Docker and local Python quick starts.
 | Anthropic | [console.anthropic.com](https://console.anthropic.com) | `AGENT_PROVIDER=anthropic`<br>`ANTHROPIC_API_KEY=sk-ant-...` |
 | Gemini | [aistudio.google.com](https://aistudio.google.com) | `AGENT_PROVIDER=gemini`<br>`GEMINI_API_KEY=...` |
 | OpenAI | [platform.openai.com](https://platform.openai.com) | `AGENT_PROVIDER=openai`<br>`OPENAI_API_KEY=sk-...` |
-| Bedrock | AWS IAM (an EC2 instance role or other AWS credentials) | `AGENT_PROVIDER=bedrock`<br>No API key needed |
+| Bedrock | AWS IAM (an EC2 instance role or other AWS credentials) | `AGENT_PROVIDER=bedrock-nova`<br>No API key needed |
 | Nebius/DeepSeek | [studio.nebius.ai](https://studio.nebius.ai) | `AGENT_PROVIDER=nebius`<br>`NEBIUS_API_KEY=...` |
 
 ### Docker (recommended)
@@ -76,11 +76,11 @@ cd galadriel-public
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # choose a provider configuration above
-python harness/main.py
+python main.py
 ```
 
 For Bedrock, the local process likewise uses the AWS credential chain and needs
-no provider API key. For Gemini, OpenAI, or Nebius/DeepSeek, export the key in
+no provider API key. For Gemini, OpenAI, or Nebius/DeepSeek, put the key in
 `.env` before starting the local process.
 
 ## Provider seam — swap the brain, keep the mind
@@ -91,7 +91,7 @@ The agent's brain is a provider adapter. Change one environment variable to swit
 AGENT_PROVIDER=anthropic        # Claude (default)
 AGENT_PROVIDER=gemini           # Google Gemini
 AGENT_PROVIDER=openai           # OpenAI
-AGENT_PROVIDER=bedrock          # AWS Bedrock (Nova)
+AGENT_PROVIDER=bedrock-nova     # AWS Bedrock (Nova)
 AGENT_PROVIDER=nebius           # Nebius Token Factory (DeepSeek, EU-hosted)
 AGENT_MODEL=claude-sonnet-5     # model within the provider
 ```
