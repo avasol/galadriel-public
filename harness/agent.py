@@ -808,6 +808,34 @@ class GaladrielAgent:
 
         # Context-window tracking — discover live from the API on first init
         _run_model_discovery(os.environ.get("ANTHROPIC_API_KEY", ""))
+        # THE VALUE REGISTRY (2026-09-30): seed the Veil with the exact secret
+        # VALUES this process holds, so a secret echoed with no shape and no
+        # NAME= context — a bare token inside code, a default argument — is
+        # still veiled. Source is the process environment itself (which already
+        # carries .env) plus the unsealed keyring. Process memory only; never
+        # written, never emitted. Fail-safe: any error leaves it empty, which is
+        # byte-identical to the pattern-only behaviour.
+        try:
+            from .redact import set_registry, collect_environ_secrets
+            _ring_vals = []
+            try:
+                _rk = Path(self.memory.config_dir).parent
+                _dotenv = self.memory.config_dir / ".env"
+                if _dotenv.exists():
+                    from harness import keyring as _kr
+                    _aedk = os.environ.get("AEDELGARD_AEDK", "")
+                    if _aedk:
+                        for _slot, _rec in (_kr.load(_dotenv, _aedk) or {}).items():
+                            _v = (_rec or {}).get("key") if isinstance(_rec, dict) else _rec
+                            if isinstance(_v, str):
+                                _ring_vals.append(_v)
+            except Exception:
+                pass
+            _n = set_registry(collect_environ_secrets(os.environ) + _ring_vals)
+            log.info("veil: value registry seeded with %d secret value(s)", _n)
+        except Exception as _rg_err:
+            log.debug("veil: registry seed skipped: %s", _rg_err)
+
         self.context_window = _resolve_context_window(self.model, self.provider.name)
 
         # THE MEASURED KEEP: token-budget history retention.

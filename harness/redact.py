@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 
 __all__ = ["redact_secrets", "redact_text", "find_secrets"]
 
@@ -91,6 +92,118 @@ def find_secrets(text: str) -> list[tuple[str, str]]:
     return found
 
 
+# ── THE VALUE REGISTRY (2026-09-30) ─────────────────────────────────────────
+# The pattern set recognises secrets by SHAPE and by NAME. A secret echoed with
+# NEITHER — a bare token inside code, a default argument, an env var expanded by
+# the shell — is invisible to it, no matter how many patterns we add. The value
+# is high-entropy but arbitrary; there is nothing in it to recognise.
+#
+# What we DO know, and the pattern engine cannot: the exact secret VALUES this
+# process already holds. So we keep a process-memory registry of them and match
+# by exact value as a second pass, closing the class the patterns cannot.
+#
+# Safety (see harness/VEIL_VALUE_REGISTRY.md): process memory ONLY, never
+# written to disk, never emitted, never logged by value; minimum length 16 so
+# short config values are never registered; empty registry is a no-op.
+_MIN_REGISTERED_LEN = 16
+_SECRET_NAME_HINT = re.compile(
+    r"(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|APIKEY|PRIVATE_KEY|AEDK)", re.I)
+_registry_lock = threading.Lock()
+_secret_registry: set[str] = set()
+
+
+def register_secret(value: str) -> bool:
+    """Add one exact secret value to the process registry. Never raises;
+    ignores short or placeholder values. Returns True if newly registered."""
+    try:
+        if not value or not isinstance(value, str):
+            return False
+        v = value.strip()
+        if len(v) < _MIN_REGISTERED_LEN or _is_placeholder(v):
+            return False
+        with _registry_lock:
+            if v in _secret_registry:
+                return False
+            _secret_registry.add(v)
+            return True
+    except Exception:
+        return False
+
+
+def set_registry(values) -> int:
+    """Replace the registry with `values`. Returns the count kept. Called at
+    boot with the values read from .env + the unsealed keyring."""
+    global _secret_registry
+    kept = set()
+    for v in values or ():
+        try:
+            if isinstance(v, str):
+                vv = v.strip()
+                if len(vv) >= _MIN_REGISTERED_LEN and not _is_placeholder(vv):
+                    kept.add(vv)
+        except Exception:
+            continue
+    with _registry_lock:
+        _secret_registry = kept
+    return len(kept)
+
+
+def registry_size() -> int:
+    with _registry_lock:
+        return len(_secret_registry)
+
+
+def collect_env_secrets(env_text: str) -> list:
+    """Values from a .env whose NAME looks like a secret. Conservative: only
+    secret-named lines, so an ordinary config value is never registered."""
+    out = []
+    try:
+        for line in (env_text or "").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, _, val = line.partition("=")
+            name = name.strip()
+            if name.startswith("export "):
+                name = name[7:].strip()
+            val = val.strip().strip("'\"")
+            if name and _SECRET_NAME_HINT.search(name) and len(val) >= _MIN_REGISTERED_LEN:
+                out.append(val)
+    except Exception:
+        pass
+    return out
+
+
+def collect_environ_secrets(environ) -> list:
+    """Secret VALUES from a process environment mapping, by NAME hint. The
+    process already holds the live secrets (ANTHROPIC_API_KEY, AEDELGARD_AEDK,
+    tokens...), so this is the simplest true source for the registry — no file
+    read, no path resolution, and it captures whatever the .env loaded."""
+    out = []
+    try:
+        for k, v in (environ or {}).items():
+            if not k or not isinstance(v, str):
+                continue
+            if _SECRET_NAME_HINT.search(str(k)) and len(v.strip()) >= _MIN_REGISTERED_LEN:
+                out.append(v.strip())
+    except Exception:
+        pass
+    return out
+
+
+def _apply_registry(text: str, hits: list) -> str:
+    """Second pass: replace every registered value, longest first, so a secret
+    that is a substring of another is not half-replaced."""
+    with _registry_lock:
+        values = sorted(_secret_registry, key=len, reverse=True)
+    for v in values:
+        if v and v in text:
+            fp = _fp(v)
+            text = text.replace(v, f"<REDACTED:known:{fp}>")
+            hits.append(("known", fp))
+    return text
+
+
 def redact_text(text: str) -> tuple[str, list[tuple[str, str]]]:
     """Redact every secret in `text`. Returns (clean_text, [(kind, fp6)])."""
     if not text or not isinstance(text, str):
@@ -110,6 +223,9 @@ def redact_text(text: str) -> tuple[str, list[tuple[str, str]]]:
             whole = m.group(0)
             return whole[:start] + marker + whole[end:]
         text = rx.sub(_sub, text)
+    # THE VALUE REGISTRY: exact-value second pass over the values this
+    # process already holds. Empty registry => no-op.
+    text = _apply_registry(text, hits)
     return text, hits
 
 
