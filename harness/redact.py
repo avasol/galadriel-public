@@ -54,8 +54,16 @@ _PATTERNS: list[tuple[str, re.Pattern, int]] = [
     # Generic env-style assignment: NAME_WITH_SECRET_WORD = value  (value kept
     # opaque; the name survives so `cat .env` output stays readable).
     ("env_value", re.compile(
-        r"(?im)^\s*(?:export\s+)?([A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|APIKEY|PRIVATE_KEY)[A-Z0-9_]*)"
+        r"(?im)(?:^|[\s:])[ \t]*(?:export\s+)?([A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|APIKEY|PRIVATE_KEY|AEDK)[A-Z0-9_]*)"
         r"\s*[=:]\s*['\"]?([^\s'\"]{8,})['\"]?\s*$"), 2),
+    # The Aedelgard registration key, matched by its VALUE not its context, so
+    # it is caught in EVERY shape — bare, as an env line, behind a
+    # `path:line:` prefix. Added 2026-09-30 (Altariel's finding): AEDELGARD_AEDK
+    # carries none of the words in the env_value name list, so the one secret a
+    # body most needs veiled slipped through every shape. `aedk_` is the normal
+    # mint; `grk_` is admin-issued. The value is opaque (the broker hashes the
+    # whole string), so length is the only guarantee we lean on.
+    ("aedelgard_key", re.compile(r"\b(?:aedk|grk)_[A-Za-z0-9_\-]{16,}\b"), 0),
     # URL query-string tokens: ?token=…  &api_key=…
     ("url_token", re.compile(
         r"(?i)[?&](?:token|api_key|apikey|access_token|key)=([A-Za-z0-9_\-\.%]{16,})"), 1),
