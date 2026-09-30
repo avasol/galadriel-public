@@ -959,6 +959,45 @@ def _anthropic_messages_to_bedrock(messages):
     return out
 
 
+class XAIProvider(OpenAIProvider):
+    """xAI (Grok) — api.x.ai, OpenAI-compatible. First-party door to the
+    Grok family. Reads XAI_API_KEY; self-contained __init__ like
+    NebiusProvider, so a body using a Grok brain is never gated on an
+    ANTHROPIC_API_KEY it deliberately lacks."""
+
+    name = "xai"
+    _default_base = "https://api.x.ai/v1"
+
+    def __init__(self, *, api_key=None, base_url=None, model=None):
+        key = api_key or os.environ.get("XAI_API_KEY") or ""
+        if not key:
+            raise RuntimeError("XAIProvider needs XAI_API_KEY. Set it in .env or your environment.")
+        super().__init__(
+            api_key=key,
+            base_url=base_url or os.environ.get("XAI_BASE_URL") or self._default_base,
+            model=model or os.environ.get("XAI_MODEL") or "grok-4.6",
+        )
+
+
+class MistralProvider(OpenAIProvider):
+    """Mistral AI — api.mistral.ai, OpenAI-compatible. EU-sovereign
+    first-party door (Mistral Large, Magistral reasoning, Codestral). Reads
+    MISTRAL_API_KEY; self-contained __init__."""
+
+    name = "mistral"
+    _default_base = "https://api.mistral.ai/v1"
+
+    def __init__(self, *, api_key=None, base_url=None, model=None):
+        key = api_key or os.environ.get("MISTRAL_API_KEY") or ""
+        if not key:
+            raise RuntimeError("MistralProvider needs MISTRAL_API_KEY. Set it in .env or your environment.")
+        super().__init__(
+            api_key=key,
+            base_url=base_url or os.environ.get("MISTRAL_BASE_URL") or self._default_base,
+            model=model or os.environ.get("MISTRAL_MODEL") or "mistral-large-latest",
+        )
+
+
 class BedrockNovaProvider:
     """Amazon Bedrock Nova via the Converse API. Cheapest brain in the account —
     used to PROVE the mind is portable, now with full tool parity (see notes)."""
@@ -1403,6 +1442,31 @@ def _is_fallback_worthy(exc: Exception) -> bool:
     return mod.split(".")[0] in _VENDOR_MODULES
 
 
+    async def list_models(self) -> list[dict]:
+        """Models available for generateContent under this key — powers the
+        /model dial. Filters out non-text modalities (audio, tts, image,
+        robotics) so only chat/thinking brains appear in the picker."""
+        url = f"{_GEMINI_API_BASE}/models"
+        r = await self._client.get(url, headers={"x-goog-api-key": self.api_key},
+                                   timeout=15.0)
+        if r.status_code in (401, 403):
+            raise ProviderAuthError(f"{self.name}: endpoint rejected key (HTTP {r.status_code}).")
+        r.raise_for_status()
+        data = r.json().get("models", []) or []
+        out = []
+        for m in data:
+            if "generateContent" not in m.get("supportedGenerationMethods", []):
+                continue
+            name = m.get("name", "").replace("models/", "")
+            if any(x in name.lower() for x in
+                   ("tts", "audio", "embedding", "imagen", "robotics", "image")):
+                continue
+            out.append({"id": name,
+                        "display_name": m.get("displayName") or name,
+                        "created_at": ""})
+        return out
+
+
 class _Rung:
     """One step of the ladder: a lazily-built provider + optional model pin."""
 
@@ -1513,6 +1577,8 @@ _REGISTRY = {
     "openai": OpenAIProvider,
     "local": LocalProvider,
     "nebius": NebiusProvider,
+    "xai": XAIProvider,
+    "mistral": MistralProvider,
     "bedrock-nova": BedrockNovaProvider,
 }
 
@@ -1541,6 +1607,10 @@ _PROVIDER_REQUIREMENTS = {
                      "nothing — a local model runs offline on your own machine."),
     "nebius":       (("NEBIUS_API_KEY",),
                      "your own Nebius key — European sovereign inference (Finland); we are not on the wire."),
+    "xai":          (("XAI_API_KEY",),
+                     "your own xAI key — direct to Grok; we are not on the wire."),
+    "mistral":      (("MISTRAL_API_KEY",),
+                     "your own Mistral key — European sovereign inference (Paris); we are not on the wire."),
 }
 
 

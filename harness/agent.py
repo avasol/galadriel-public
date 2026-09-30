@@ -29,6 +29,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from .response_status import with_status, with_stream_status, record as record_response_status
+from .redact import redact_secrets  # THE VEIL
 from .providers import make_provider
 from .thinking_preservation import (
     replaying_thinking as _replaying_thinking,
@@ -336,6 +337,29 @@ def _truncated_tool_name(content) -> str:
     except Exception:
         pass
     return ""
+
+
+def _strip_output_limit_nudges(messages: list) -> int:
+    """Remove any injected [SYSTEM:OUTPUT-LIMIT] user turns from history.
+
+    These nudges are transient scaffolding, not conversation: left in place
+    they (a) accumulate one per retry and (b) put user turns back-to-back,
+    which Anthropic merges but stricter seams (Gemini role alternation) may
+    reject. Called before re-injecting a fresh nudge so at most ONE is ever
+    present, and on the success path once the retry has landed. Returns the
+    number removed."""
+    n = 0
+    keep = []
+    for m in messages:
+        c = m.get("content")
+        if (m.get("role") == "user" and isinstance(c, str)
+                and "[SYSTEM:OUTPUT-LIMIT]" in c):
+            n += 1
+            continue
+        keep.append(m)
+    if n:
+        messages[:] = keep
+    return n
 
 
 def _resolve_max_tokens_ceiling(model: str) -> int:
@@ -1415,6 +1439,8 @@ class GaladrielAgent:
             log.info(f"Response stop_reason: {response.stop_reason}")
 
             if response.stop_reason == "end_turn":
+                if max_tokens_retries:
+                    _strip_output_limit_nudges(messages)
                 max_tokens_retries = 0  # Reset counter on success
                 text_parts = [
                     block["text"]
@@ -1480,33 +1506,12 @@ class GaladrielAgent:
                 del messages[-1]
                 truncated_tool = _truncated_tool_name(response.content)
 
-                # Archive-before-trim: the max_tokens recovery cascade (trim x2,
-                # then hard_reset) silently drops messages from the conversation.
-                # Snapshot the full current state to the palace on the FIRST
-                # retry only — one archive per cascade covers both subsequent
-                # trims and a potential hard reset. Fire-and-forget so recovery
-                # is not blocked by the mine. Silently no-op if mempalace is
-                # not installed.
-                if max_tokens_retries == 1 and messages:
-                    archive_tag = f"max_tokens_{channel_id}"
-                    try:
-                        from . import palace
-                        snapshot = list(messages)  # defensive copy
-                        asyncio.create_task(
-                            palace.archive_conversation(archive_tag, snapshot)
-                        )
-                        log.info(
-                            f"max_tokens recovery: queued palace archive of "
-                            f"{len(snapshot)} messages (channel={channel_id}, tag={archive_tag})"
-                        )
-                        # Record a post-recovery advisory so subsequent turns
-                        # know the archive tag to recall from. Cleared on
-                        # clear_history() / pop_and_archive_history().
-                        self._post_recovery_archive_tag[channel_id] = archive_tag
-                    except Exception as e:
-                        log.warning(
-                            f"max_tokens recovery: palace archive queue failed: {e}"
-                        )
+                # NOTHING is dropped on this branch any more, so the old
+                # archive-on-first-hit + post-recovery advisory are gone: they
+                # would falsely tell later turns the conversation was archived
+                # (it was not) and mine duplicate snapshots into the palace on
+                # every harmless truncation. Archive/advisory remain reserved
+                # for the REAL-overflow (413) branch, where history IS dropped.
 
                 # Extract any text from the truncated response to return
                 # if we're about to give up.
@@ -1523,19 +1528,21 @@ class GaladrielAgent:
                 )
 
                 if max_tokens_retries >= 3:
-                    # We've tried 3 times — give up gracefully.
-                    # Hard reset the conversation so next message works.
+                    # Give up gracefully — but do NOT destroy the history.
+                    # The truncated replies were already deleted and the
+                    # conversation is valid; hard-reset was the same
+                    # misdiagnosis (output ceiling as context overflow). Strip
+                    # the transient nudges, KEEP the history, return honestly.
                     try:
                         _flight.finish(completed=False,
                                        note="max_tokens cascade (gave up after 3)")
                     except Exception:
                         pass
-                    self._hard_reset(messages, user_message)
+                    _strip_output_limit_nudges(messages)
                     suffix = (
-                        "\n\n*(My response was too long and I could not recover after multiple attempts. "
-                        "The conversation has been reset — but your prior exchange was preserved "
-                        "in my memory palace. Ask me to recall it any time and I'll `palace_search` "
-                        "for the thread.)*"
+                        "\n\n*(My response kept hitting the output ceiling. I have "
+                        "kept our conversation intact — nothing was lost. Ask me to "
+                        "continue in smaller pieces.)*"
                     )
                     if truncated_text:
                         try:
@@ -1545,8 +1552,8 @@ class GaladrielAgent:
                             pass
                         return truncated_text + suffix
                     return (
-                        "(Response exceeded token limit repeatedly. Conversation reset. "
-                        "Prior exchange preserved in my memory palace — ask and I'll recall it.)"
+                        "(My response kept exceeding the output limit. The conversation "
+                        "is intact — ask me to continue in smaller pieces.)"
                     )
 
                 # THE WHOLE CUT (2026-09-30). stop_reason=max_tokens is an
@@ -1573,7 +1580,9 @@ class GaladrielAgent:
 
                 # Same-channel USER-turn nudge — NOT a system block, so the
                 # frozen prefix stays byte-stable (thinking preservation +
-                # cache) and no history is mutated.
+                # cache) and no history is mutated. Strip any PRIOR nudge
+                # first so at most one is ever present (no user+user pile-up).
+                _strip_output_limit_nudges(messages)
                 messages.append({
                     "role": "user",
                     "content": _render_max_tokens_advisory(self.max_tokens, truncated_tool),
@@ -1582,6 +1591,8 @@ class GaladrielAgent:
                 continue
 
             if response.stop_reason == "tool_use":
+                if max_tokens_retries:
+                    _strip_output_limit_nudges(messages)
                 max_tokens_retries = 0  # Reset counter on successful tool use
                 tool_results = []
                 # Use the original response.content blocks to extract tool IDs
@@ -1625,6 +1636,15 @@ class GaladrielAgent:
                         memory_manager=self.memory,
                         working_dir=self.working_dir,
                     )
+
+                    # THE VEIL: secrets never enter history. Redact BEFORE
+                    # the model sees the result, so nothing downstream
+                    # (journal, cascades, debug dumps, the memory index)
+                    # ever holds them.
+                    result, _veil = redact_secrets(result)
+                    if _veil:
+                        log.warning(f"veil: redacted {len(_veil)} secret(s) from {tool_name}: "
+                                    + ", ".join(f"{k}:{fp}" for k, fp in _veil))
 
                     if len(result) > 15000:
                         result = result[:15000] + "\n...[truncated]"

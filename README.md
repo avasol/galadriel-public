@@ -13,7 +13,7 @@
 
 ## What this is
 
-A persistent AI agent harness that runs on your own machine. It connects to any LLM provider (Claude, Gemini, OpenAI, Bedrock, Nebius/DeepSeek), maintains a local verbatim memory palace with zero-token retrieval, and can edit its own code to improve how it works.
+A persistent AI agent harness that runs on your own machine. It connects to any LLM provider (Claude, Gemini, OpenAI, Bedrock, Nebius/DeepSeek, xAI/Grok, Mistral), maintains a local verbatim memory palace with zero-token retrieval, and can edit its own code to improve how it works.
 
 This is **not** a product. It is the open engine that [Aedelgard](https://aedelgard.com) packages into a one-click desktop app. Everything here is real, inspectable, and yours to build.
 
@@ -76,6 +76,8 @@ AGENT_PROVIDER=gemini           # Google Gemini
 AGENT_PROVIDER=openai           # OpenAI
 AGENT_PROVIDER=bedrock          # AWS Bedrock (Nova)
 AGENT_PROVIDER=nebius           # Nebius Token Factory (DeepSeek, EU-hosted)
+AGENT_PROVIDER=xai              # xAI (Grok)
+AGENT_PROVIDER=mistral          # Mistral (EU-sovereign, Paris)
 AGENT_MODEL=claude-sonnet-5     # model within the provider
 ```
 

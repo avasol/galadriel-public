@@ -17,6 +17,7 @@ from harness.agent import (
     _render_max_tokens_advisory,
     _truncated_tool_name,
     _resolve_max_tokens_ceiling,
+    _strip_output_limit_nudges,
 )
 
 
@@ -113,9 +114,10 @@ def test_max_tokens_keeps_history_and_recovers():
     after = agent.conversations[ch]
     assert len(after) >= before, f"history shrank {before} -> {len(after)}"
     assert len(after) > 55
+    # nudge is transient scaffolding — stripped on success
     nudges = [m for m in after if m["role"] == "user"
               and isinstance(m["content"], str) and "[SYSTEM:OUTPUT-LIMIT]" in m["content"]]
-    assert len(nudges) == 1 and "write_file" in nudges[0]["content"]
+    assert nudges == []
     assert agent.max_tokens > 1000
 
 
@@ -141,3 +143,48 @@ def test_escalates_only_once():
     assert agent.provider.complete.call_count == 3
     assert agent.max_tokens == min(32_000, max(2000, 1000 + 4096))
     assert len(agent.conversations[ch]) > 55
+
+
+def test_nudge_stripped_on_success():
+    agent, ch = _mk_agent(60, 1000)
+    agent.provider = MagicMock()
+    agent.provider.complete = AsyncMock(side_effect=[
+        _max_tokens_response(), _end_turn_response()])
+    _run(agent, ch)
+    leftovers = [m for m in agent.conversations[ch]
+                 if isinstance(m.get("content"), str)
+                 and "[SYSTEM:OUTPUT-LIMIT]" in m["content"]]
+    assert leftovers == []
+
+
+def test_giveup_keeps_history_no_hard_reset():
+    agent, ch = _mk_agent(60, 1000)
+    agent.provider = MagicMock()
+    agent.provider.complete = AsyncMock(side_effect=[
+        _max_tokens_response(), _max_tokens_response(), _max_tokens_response()])
+    before = len(agent.conversations[ch])
+    res = _run(agent, ch)
+    assert agent.provider.complete.call_count == 3
+    assert len(agent.conversations[ch]) >= before - 1
+    assert len(agent.conversations[ch]) > 55
+    assert "intact" in res.lower()
+
+
+def test_strip_output_limit_nudges_helper():
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "yo"},
+        {"role": "user", "content": "[SYSTEM:OUTPUT-LIMIT] cut off"},
+        {"role": "user", "content": "[SYSTEM:OUTPUT-LIMIT] cut off again"},
+    ]
+    assert _strip_output_limit_nudges(msgs) == 2
+    assert all("OUTPUT-LIMIT" not in str(m.get("content")) for m in msgs)
+
+
+def test_no_false_archive_advisory():
+    agent, ch = _mk_agent(60, 1000)
+    agent.provider = MagicMock()
+    agent.provider.complete = AsyncMock(side_effect=[
+        _max_tokens_response(), _end_turn_response()])
+    _run(agent, ch)
+    assert agent._post_recovery_archive_tag.get(ch) is None
