@@ -307,6 +307,51 @@ def _render_recovery_advisory(receipt) -> str:
     )
 
 
+def _render_max_tokens_advisory(max_tokens: int, tool_name: str = "") -> str:
+    """The smaller-steps nudge injected after a max_tokens truncation.
+
+    A max_tokens stop means the ANSWER ran long — not that the context is
+    full. The recovery is therefore behavioural, not destructive: keep the
+    history, tell the model to emit smaller steps, retry. This string is
+    delivered as a same-channel USER turn (never a system block), so the
+    frozen prefix stays byte-stable for thinking preservation + cache.
+    """
+    where = f" while emitting `{tool_name}`" if tool_name else ""
+    return (
+        f"[SYSTEM:OUTPUT-LIMIT] Your previous response was cut off at the "
+        f"output ceiling ({max_tokens} tokens){where}. The conversation is "
+        f"INTACT — nothing was lost. Continue, but emit SMALLER STEPS: patch "
+        f"instead of rewriting whole files, split large writes into several "
+        f"calls, and finish this response more compactly."
+    )
+
+
+def _truncated_tool_name(content) -> str:
+    """Best-effort name of the tool that was mid-emission when the output
+    ceiling hit — for the advisory only. '' when the truncation was text."""
+    try:
+        for b in content or []:
+            if getattr(b, "type", None) == "tool_use":
+                return getattr(b, "name", "") or ""
+    except Exception:
+        pass
+    return ""
+
+
+def _resolve_max_tokens_ceiling(model: str) -> int:
+    """The output ceiling a max_tokens recovery may escalate TO (once).
+
+    An escalation cap, not a default: the goal is that a too-tight
+    AGENT_MAX_TOKENS stops recurring without unbounded growth. Override via
+    AGENT_MAX_TOKENS_CEILING. Cross-provider safe — all our providers accept
+    well above this, and the Bedrock path clamps to its own limit anyway.
+    """
+    env = os.environ.get("AGENT_MAX_TOKENS_CEILING")
+    if env and env.isdigit():
+        return int(env)
+    return 32_000
+
+
 def _resolve_history_token_budget(context_window: int) -> int:
     """How many estimated tokens of conversation history to KEEP.
 
@@ -1221,6 +1266,7 @@ class GaladrielAgent:
             log.debug("inflight advisory failed (non-fatal): %s", _e)
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
+        max_tokens_escalated = False  # Escalate the output ceiling at most once
         request_too_large_retries = 0  # Track consecutive 413 payload hits
         thinking_mismatch_retries = 0  # Track preserved-thinking 400s (max 1)
 
@@ -1432,6 +1478,7 @@ class GaladrielAgent:
 
                 # Remove the incomplete assistant message
                 del messages[-1]
+                truncated_tool = _truncated_tool_name(response.content)
 
                 # Archive-before-trim: the max_tokens recovery cascade (trim x2,
                 # then hard_reset) silently drops messages from the conversation.
@@ -1502,24 +1549,35 @@ class GaladrielAgent:
                         "Prior exchange preserved in my memory palace — ask and I'll recall it.)"
                     )
 
-                # First two attempts: try progressively harder trimming.
-                count_before = len(messages)
-                if max_tokens_retries == 1:
-                    self._trim_history(messages, max_messages=50)
-                else:
-                    self._trim_history(messages, max_messages=20)
+                # THE WHOLE CUT (2026-09-30). stop_reason=max_tokens is an
+                # OUTPUT ceiling: the ANSWER ran long, NOT a context overflow.
+                # The old recovery trimmed history to 50 then 20 messages and
+                # hard-reset — amputating the conversation for a too-long
+                # REPLY (observed: an Opus-5 write_file cascade losing the
+                # whole thread in a single turn, five times over). The correct
+                # recovery: drop the truncated reply (done above), KEEP the
+                # history, hand the model a smaller-steps instruction, retry.
+                # Escalate the output ceiling ONCE so a genuinely-too-tight
+                # AGENT_MAX_TOKENS stops recurring. Trim/reset stays reserved
+                # for REAL overflow (413 / prompt-too-long) in its own branch.
+                if not max_tokens_escalated:
+                    _ceiling = _resolve_max_tokens_ceiling(self.model)
+                    if self.max_tokens < _ceiling:
+                        self.max_tokens = min(_ceiling, max(self.max_tokens * 2,
+                                                            self.max_tokens + 4096))
+                        max_tokens_escalated = True
+                        log.warning(
+                            f"max_tokens recovery: escalating output ceiling to "
+                            f"{self.max_tokens} (attempt {max_tokens_retries})"
+                        )
 
-                # If trim didn't actually reduce the count, force a hard reset.
-                if len(messages) >= count_before:
-                    log.warning(
-                        f"Trim was ineffective ({count_before} → {len(messages)}), "
-                        "performing hard reset"
-                    )
-                    self._hard_reset(messages, user_message)
-
-                # Ensure we end with a user message for the API
-                if messages and messages[-1].get("role") != "user":
-                    messages.append({"role": "user", "content": user_message})
+                # Same-channel USER-turn nudge — NOT a system block, so the
+                # frozen prefix stays byte-stable (thinking preservation +
+                # cache) and no history is mutated.
+                messages.append({
+                    "role": "user",
+                    "content": _render_max_tokens_advisory(self.max_tokens, truncated_tool),
+                })
 
                 continue
 
