@@ -56,6 +56,75 @@ def create_tower(agent, scheduler=None) -> Flask:
     def chat_page():
         return render_template("chat.html")
 
+    @app.route("/api/knock", methods=["POST", "OPTIONS"])
+    def api_knock():
+        """THE HERALD'S DOOR, body-side: a visiting mind knocks, the body answers.
+
+        The symmetric half of the door Galadriel already has. Without it,
+        dialogue between two bodies is one-way by construction — one side can
+        knock, the other cannot be reached. A knock spawns a full turn on the
+        visitor's own persistent channel and returns the reply as JSON, so the
+        visitor can read it where they poll.
+
+        No auth inside the trusted fabric (tunnel membership is the lock): if
+        the peer list ever grows beyond the two smiths, a shared-secret header
+        goes on first. A body with no brain answers honestly (409), never with
+        a traceback.
+        """
+        import re as _re, hashlib
+        data = request.json or {}
+        message = (data.get("message") or "").strip()
+        visitor_raw = (data.get("from") or "").strip() or "visitor"
+        visitor = _re.sub(r"[^A-Za-z0-9 \-]", "", visitor_raw)[:64].strip() or "visitor"
+        if not message:
+            return jsonify({"error": "Empty message"}), 400
+        if len(message) > 8000:
+            return jsonify({"error": "Message too long (8000 chars max)"}), 400
+        if agent is None:
+            return jsonify({"error": "This body has no brain yet.", "setup_required": True}), 409
+        if not (scheduler and scheduler._loop and scheduler._loop.is_running()):
+            return jsonify({"error": "The door is closed (scheduler loop unavailable)"}), 503
+
+        loop = scheduler._loop
+        channel_id = "knock-" + _re.sub(r"[^a-z0-9\-]", "-", visitor.lower())
+
+        # Dedupe: an identical in-flight knock must not spawn a second turn.
+        knock_key = (channel_id, hashlib.md5(message.encode()).hexdigest())
+        inflight = getattr(app, "_inflight_knocks", None)
+        if inflight is None:
+            inflight = app._inflight_knocks = {}
+        pending = inflight.get(knock_key)
+        if pending is not None and not pending.done():
+            return jsonify({"status": "processing",
+                            "note": "This exact knock is already being answered."}), 202
+
+        prompt = (
+            f"[VISITOR:{visitor.upper()}] The following message arrived at the "
+            f"Herald's Door (Tower /api/knock) from {visitor}. Reply to {visitor} "
+            f"directly; your reply is returned to them and kept on your channel "
+            f"{channel_id} so you can continue the thread later.\n\n{message}"
+        )
+        future = asyncio.run_coroutine_threadsafe(
+            agent.respond(prompt, channel_id=channel_id), loop)
+        inflight[knock_key] = future
+        try:
+            # 120s: long infrastructure turns are normal; a visitor should poll.
+            response = future.result(timeout=120)
+        except FuturesTimeout:
+            inflight.pop(knock_key, None)
+            return jsonify({"status": "processing",
+                            "note": "Reply is taking longer than 120s."}), 202
+        except Exception as e:
+            log.exception("Herald's Door (body) error")
+            inflight.pop(knock_key, None)
+            return jsonify({"error": str(e)}), 500
+        finally:
+            if future.done():
+                inflight.pop(knock_key, None)
+        return jsonify({"response": str(response),
+                        "display_response": present(response),
+                        "status": status_of(response)})
+
     @app.route("/api/chat", methods=["POST"])
     def api_chat():
         data = request.json
