@@ -631,7 +631,11 @@ class OpenAIProvider:
             out_blocks = [_NovaBlock(text="")]
 
         finish = "end_turn"
-        if any(getattr(b, "type", None) == "tool_use" for b in out_blocks):
+        if data.get("status") == "incomplete":
+            _why = (data.get("incomplete_details") or {}).get("reason")
+            finish = {"max_output_tokens": "max_tokens",
+                      "content_filter": "refusal"}.get(_why, "end_turn")
+        if finish != "refusal" and any(getattr(b, "type", None) == "tool_use" for b in out_blocks):
             finish = "tool_use"
 
         u = data.get("usage", {}) or {}
@@ -730,9 +734,10 @@ class OpenAIProvider:
         if not out_blocks:
             out_blocks = [_NovaBlock(text="")]
 
-        finish = {"tool_calls": "tool_use", "length": "max_tokens"}.get(
+        finish = {"tool_calls": "tool_use", "length": "max_tokens",
+                  "content_filter": "refusal"}.get(
             choice.get("finish_reason"), "end_turn")
-        if any(getattr(b, "type", None) == "tool_use" for b in out_blocks):
+        if finish != "refusal" and any(getattr(b, "type", None) == "tool_use" for b in out_blocks):
             finish = "tool_use"
 
         u = data.get("usage", {}) or {}
@@ -1050,7 +1055,9 @@ class BedrockNovaProvider:
         # Converse stopReason "tool_use" -> Anthropic "tool_use"; everything
         # else folds to "end_turn" (the agent only branches on those two + the
         # Anthropic-side max_tokens it never receives from Nova).
-        stop = "tool_use" if resp.get("stopReason") == "tool_use" else "end_turn"
+        stop = {"tool_use": "tool_use", "max_tokens": "max_tokens",
+                "guardrail_intervened": "refusal",
+                "content_filtered": "refusal"}.get(resp.get("stopReason"), "end_turn")
         u = resp.get("usage", {})
         result = _NovaResponse(out_blocks, stop,
                                u.get("inputTokens", 0), u.get("outputTokens", 0))
@@ -1382,8 +1389,18 @@ class GeminiProvider:
                     }))
         if not out_blocks:
             out_blocks = [_NovaBlock(text="")]
-        # If any tool_use block is present, the agent must run the cascade.
-        if any(getattr(b, "type", None) == "tool_use" for b in out_blocks):
+        # THE HONEST STOP (2026-09-30): Gemini's finishReason was never read, so
+        # a truncation or a safety block came back dressed as end_turn.
+        _fr = (cands[0].get("finishReason") if cands else None) or ""
+        if not cands and (data.get("promptFeedback") or {}).get("blockReason"):
+            finish = "refusal"
+        elif _fr == "MAX_TOKENS":
+            finish = "max_tokens"
+        elif _fr in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION", "IMAGE_SAFETY"):
+            finish = "refusal"
+        # If any tool_use block is present, the agent must run the cascade --
+        # unless the generation was refused: a refused call never runs.
+        if finish != "refusal" and any(getattr(b, "type", None) == "tool_use" for b in out_blocks):
             finish = "tool_use"
 
         um = data.get("usageMetadata", {})

@@ -373,6 +373,31 @@ def _truncated_tool_name(content) -> str:
     return ""
 
 
+def _render_honest_stop(reason: str, tool_name: str = "", partial: str = "") -> str:
+    """THE HONEST STOP (2026-09-30): the reply for a stop_reason the loop cannot
+    continue from -- a provider `refusal`, or any reason it does not know.
+
+    Before this, such a stop fell through `while True` and called the API again
+    at once: the half-emitted tool_use was patched by _sanitize_tool_pairs as
+    "interrupted", the mind was never told a refusal happened (it guessed
+    max_tokens and promoted a scar on that false premise), and nothing bounded
+    the loop if the refusal repeated. Now: nothing from the stopped reply is
+    executed, nothing is retried automatically, the history is kept, and the
+    real reason is named -- to the human and, via history, to the mind.
+    """
+    where = f" while writing `{tool_name}`" if tool_name else ""
+    if reason == "refusal":
+        what = f"The provider stopped my reply with a refusal{where}."
+    else:
+        what = f"My reply ended with a stop reason I cannot continue from ({reason!r}){where}."
+    note = (
+        f"\u26a0\ufe0f *({what} Nothing from that step was executed or written, "
+        "and I did not retry it automatically. The conversation is intact. I can "
+        "rephrase or split the step, or you can tell me how to proceed.)*"
+    )
+    return f"{partial}\n\n{note}" if partial else note
+
+
 def _strip_output_limit_nudges(messages: list) -> int:
     """Remove any injected [SYSTEM:OUTPUT-LIMIT] user turns from history.
 
@@ -1658,6 +1683,41 @@ class GaladrielAgent:
                 })
 
                 continue
+
+            # THE HONEST STOP (2026-09-30): end_turn returned and max_tokens
+            # continued above; only tool_use (run the cascade) and pause_turn
+            # (provider asks to be resumed -- unchanged, falls through) may loop.
+            # Anything else -- refusal, or a reason we have never seen -- must
+            # not silently re-call the API. See _render_honest_stop.
+            if response.stop_reason not in ("tool_use", "pause_turn"):
+                _reason = str(response.stop_reason or "unknown")
+                _cut_tool = _truncated_tool_name(response.content)
+                _partial = "\n".join(
+                    b.text for b in (response.content or [])
+                    if getattr(b, "type", None) == "text" and getattr(b, "text", None)
+                ).strip()
+                if max_tokens_retries:
+                    _strip_output_limit_nudges(messages)
+                final_text = _render_honest_stop(_reason, _cut_tool, _partial)
+                # Replace the stopped reply (it may hold a half-emitted tool_use
+                # that must never run) with the honest note: role alternation
+                # stays valid and the next turn knows what really happened.
+                messages[-1] = {"role": "assistant",
+                                "content": [{"type": "text", "text": final_text}]}
+                log.warning(f"THE HONEST STOP: stop_reason={_reason!r} "
+                            f"tool={_cut_tool!r}; nothing executed, no retry, history kept")
+                try:
+                    _flight.incident(f"stop_reason={_reason}")
+                    _flight.finish(completed=False, note=f"stop_reason={_reason}")
+                except Exception:
+                    pass
+                user_summary = user_message[:100] if isinstance(user_message, str) else "[multimodal message]"
+                self.memory.append_daily_log(f"[chat:{channel_id}] User: {user_summary}...")
+                try:
+                    self.journal.append("assistant", final_text, channel=channel_id)
+                except Exception:
+                    log.debug("journal append (honest stop) failed", exc_info=True)
+                return final_text
 
             if response.stop_reason == "tool_use":
                 if max_tokens_retries:
