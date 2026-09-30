@@ -43,17 +43,30 @@ Connect a bot token and the agent meets you in Discord — same mind, same memor
 
 ## Quick start
 
+Choose one provider configuration below and add it to `.env`. The same `.env`
+file is used by both the Docker and local Python quick starts.
+
+| Provider | Key source | `.env` configuration |
+|---|---|---|
+| Anthropic | [console.anthropic.com](https://console.anthropic.com) | `AGENT_PROVIDER=anthropic`<br>`ANTHROPIC_API_KEY=sk-ant-...` |
+| Gemini | [aistudio.google.com](https://aistudio.google.com) | `AGENT_PROVIDER=gemini`<br>`GEMINI_API_KEY=...` |
+| OpenAI | [platform.openai.com](https://platform.openai.com) | `AGENT_PROVIDER=openai`<br>`OPENAI_API_KEY=sk-...` |
+| Bedrock | AWS IAM (an EC2 instance role or other AWS credentials) | `AGENT_PROVIDER=bedrock`<br>No API key needed |
+| Nebius/DeepSeek | [studio.nebius.ai](https://studio.nebius.ai) | `AGENT_PROVIDER=nebius`<br>`NEBIUS_API_KEY=...` |
+
 ### Docker (recommended)
 
 ```bash
 git clone https://github.com/avasol/galadriel-public.git
 cd galadriel-public
-cp .env.example .env          # add your ANTHROPIC_API_KEY
+cp .env.example .env          # choose a provider configuration above
 docker compose up -d --build
 docker compose logs -f
 ```
 
 The Tower UI comes up on [http://127.0.0.1:8080](http://127.0.0.1:8080).
+For Bedrock, run Docker on an AWS instance with an IAM role (or configure
+standard AWS credentials and `AWS_REGION` in `.env`).
 
 ### Local Python
 
@@ -62,9 +75,13 @@ git clone https://github.com/avasol/galadriel-public.git
 cd galadriel-public
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # add your ANTHROPIC_API_KEY
+cp .env.example .env          # choose a provider configuration above
 python harness/main.py
 ```
+
+For Bedrock, the local process likewise uses the AWS credential chain and needs
+no provider API key. For Gemini, OpenAI, or Nebius/DeepSeek, export the key in
+`.env` before starting the local process.
 
 ## Provider seam — swap the brain, keep the mind
 
