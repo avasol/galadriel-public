@@ -124,6 +124,7 @@ def _run_model_discovery(api_key: str) -> None:
                 ctx = getattr(m, "max_input_tokens", None)
                 if ctx and isinstance(ctx, int):
                     _DISCOVERED_CONTEXT_WINDOWS[m.id.lower()] = ctx
+                    _PROVIDER_CONTEXT_WINDOWS[("anthropic", m.id.lower())] = ctx
     except Exception as exc:
         log.warning(f"Model discovery (anthropic) failed: {exc}")
     try:
@@ -137,6 +138,7 @@ def _run_model_discovery(api_key: str) -> None:
                     name = (m.get("name") or "").split("/")[-1].lower()
                     if name and isinstance(ctx, int) and ctx > 0:
                         _DISCOVERED_CONTEXT_WINDOWS[name] = ctx
+                        _PROVIDER_CONTEXT_WINDOWS[("gemini", name)] = ctx
     except Exception as exc:
         log.warning(f"Model discovery (gemini) failed: {exc}")
     log.info(f"Model discovery: {len(_DISCOVERED_CONTEXT_WINDOWS)} models loaded.")
@@ -148,17 +150,49 @@ WARN_TIER_URGENT = "urgent"        # 95%
 _TIER_RANK = {WARN_TIER_ATTENTION: 1, WARN_TIER_URGENT: 2}
 
 
-def _resolve_context_window(model: str) -> int:
+# Provider-keyed context windows, e.g. {('gemini','gemini-2.0-flash'): 1048576}.
+# Read by _resolve_context_window when a model id is ambiguous across
+# providers. Populated by _run_model_discovery below.
+_PALANTIR_PROVIDER_ALIASES = {
+    "aedelgard": "anthropic",
+    "google": "gemini",
+    "custom": "openai",
+}
+_PROVIDER_CONTEXT_WINDOWS: dict[tuple[str, str], int] = {}
+
+
+def _normalize_provider(name: str) -> str:
+    """Map a provider label to the body's canonical provider name. Palantir
+    says "google"; the body says "gemini" (and "aedelgard" rides the anthropic
+    relay). Without this the provider-keyed maps miss exactly where they are
+    most needed."""
+    return _PALANTIR_PROVIDER_ALIASES.get((name or "").lower(),
+                                          (name or "").lower())
+
+
+def _resolve_context_window(model: str, provider: str | None = None) -> int:
+    """The context window for a model, provider-aware.
+
+    THE DEAD MAP, MADE LIVE (2026-09-30): _PROVIDER_CONTEXT_WINDOWS was
+    populated at two discovery sites and read NOWHERE -- a half-built seam that
+    could not disambiguate provider-specific models. It is now consulted, keyed
+    on the NORMALIZED (provider, model), between the bare-id discovery and the
+    static table: a strictly additive source, so values are unchanged for every
+    model already discovered (the provider-keyed entries come from the same
+    calls). Pre-wires the Palantir (provider, model) plan.
+    """
     env = os.environ.get("AGENT_CONTEXT_WINDOW")
     if env and env.isdigit():
         return int(env)
-    key = model.lower()
-    # Live API discovery takes priority; static overrides are the fallback.
-    return (
-        _DISCOVERED_CONTEXT_WINDOWS.get(key)
-        or CONTEXT_WINDOW_OVERRIDES.get(key)
-        or CONTEXT_WINDOW_DEFAULT
-    )
+    key = (model or "").lower()
+    v = _DISCOVERED_CONTEXT_WINDOWS.get(key)
+    if v:
+        return v
+    if provider:
+        v = _PROVIDER_CONTEXT_WINDOWS.get((_normalize_provider(provider), key))
+        if isinstance(v, int) and v > 0:
+            return v
+    return CONTEXT_WINDOW_OVERRIDES.get(key) or CONTEXT_WINDOW_DEFAULT
 
 
 def _get_supreme_model() -> str:
@@ -774,7 +808,7 @@ class GaladrielAgent:
 
         # Context-window tracking — discover live from the API on first init
         _run_model_discovery(os.environ.get("ANTHROPIC_API_KEY", ""))
-        self.context_window = _resolve_context_window(self.model)
+        self.context_window = _resolve_context_window(self.model, self.provider.name)
 
         # THE MEASURED KEEP: token-budget history retention.
         self.history_token_budget = _resolve_history_token_budget(self.context_window)
