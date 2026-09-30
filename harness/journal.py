@@ -15,6 +15,7 @@ bodies on one key cannot conflict, their histories interleave. The entire
 import hashlib
 import json
 import logging
+from .redact import redact_text as _veil_text  # THE VEIL (inbound)
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +47,14 @@ class ConversationJournal:
                 content = json.dumps(content, ensure_ascii=False, default=str)
             except Exception:
                 content = str(content)
+        # THE VEIL (inbound): the journal is a disk sink — a secret in the
+        # user's own text (or a provider reply) must never be filed verbatim.
+        try:
+            content, _vh = _veil_text(content)
+            if _vh:
+                log.warning("veil(journal): redacted %d secret(s)", len(_vh))
+        except Exception:
+            pass
         ts = datetime.now(timezone.utc).isoformat()
         item = {
             "id": self._item_id(ts, channel, role, content),

@@ -1237,6 +1237,13 @@ class GaladrielAgent:
 
     @with_status
     async def respond(self, user_message: str | list, channel_id: str = "default") -> str:
+        # THE VEIL (inbound): redact the user's own text ONCE at entry,
+        # so the message list and the journal both inherit clean text
+        # from a single point. The docstring claimed this and nothing
+        # called it — the other half of the veil was never wired.
+        user_message, _veil_in = redact_secrets(user_message)
+        if _veil_in:
+            log.warning("veil(inbound): redacted %d secret(s)" % len(_veil_in))
         messages = self._get_messages(channel_id)
         messages.append({"role": "user", "content": user_message})
         try:

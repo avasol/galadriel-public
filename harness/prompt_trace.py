@@ -25,6 +25,7 @@ one reader (the Tower /api/debug/prompts, lazily).
 import hashlib
 import json
 import logging
+from .redact import redact_text as _veil_text  # THE VEIL (sink)
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -50,11 +51,17 @@ def _render_content(content) -> str:
     """Flatten a message's content (str or block list) to a single string
     for hashing/heads."""
     if isinstance(content, str):
-        return content
+        _r = content
+    else:
+        try:
+            _r = json.dumps(content, ensure_ascii=False, default=str)
+        except Exception:
+            _r = str(content)
     try:
-        return json.dumps(content, ensure_ascii=False, default=str)
+        _r, _ = _veil_text(_r)  # THE VEIL: the head is written to disk
     except Exception:
-        return str(content)
+        pass
+    return _r
 
 
 def _usage_dict(response) -> dict:
@@ -85,6 +92,12 @@ def trace_call(memory_dir, *, channel: str, turn_id: str, seq: int,
             for b in (system_blocks or [])
         ]
         sys_full = "\n\n\u241e\n\n".join(sys_texts)  # ␞ block separator
+        try:
+            sys_full, _vh = _veil_text(sys_full)
+            if _vh:
+                log.warning("veil(trace/sys): redacted %d secret(s)", len(_vh))
+        except Exception:
+            pass
         sys_hash = _sha12(sys_full)
         blob_path = blobs / f"system_{sys_hash}.txt"
         if not blob_path.exists():
