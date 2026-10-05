@@ -26,6 +26,7 @@ import asyncio
 import os
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from .response_status import with_status, with_stream_status, record as record_response_status
@@ -858,6 +859,7 @@ class GaladrielAgent:
         except ValueError:
             self._frozen_prefix_ttl = 21600.0
         self._frozen_system: dict = {}  # channel -> (built_at_monotonic, blocks)
+        self._last_turn_end: dict = {}  # channel -> wall-clock end of the last turn
 
         # THE UNBROKEN THREAD: verbatim conversation journal, federated into
         # palace recall. Append-only JSONL under memory/journal/.
@@ -1297,6 +1299,59 @@ class GaladrielAgent:
         # Shallow copy so appending advisories never mutates the frozen base.
         return [dict(b) for b in blocks]
 
+    def _stamp_turn_end(self, channel_id) -> None:
+        """Record the wall-clock end of the last turn for a channel."""
+        if not hasattr(self, "_last_turn_end"):
+            self._last_turn_end = {}
+        self._last_turn_end[channel_id] = time.time()
+
+    def _maybe_rollover(self, channel_id) -> dict | None:
+        """Replace a cold, large thread with a small carry. Never raises."""
+        try:
+            from . import rollover
+            if not rollover.enabled():
+                return None
+            msgs = self.conversations.get(channel_id)
+            if not msgs:
+                return None
+            stamp = getattr(self, "_last_turn_end", {}).get(channel_id)
+            if stamp is None:
+                return None
+            tokens = sum(_estimate_msg_tokens(m) for m in msgs)
+            idle = time.time() - stamp
+            if not rollover.should_roll(tokens, idle):
+                return None
+            carry = rollover.build_carry(msgs)
+            if not carry:
+                return None
+            old = list(msgs)
+            msgs[:] = carry
+            getattr(self, "_frozen_system", {}).pop(channel_id, None)
+            info = {
+                "channel": channel_id,
+                "idle_s": idle,
+                "tokens_before": tokens,
+                "tokens_after": sum(_estimate_msg_tokens(m) for m in carry),
+                "messages_before": len(old),
+                "carried_exchanges": len(carry) // 2,
+            }
+            try:
+                self.journal.append("event", "[rollover] " + json.dumps(info),
+                                    channel=channel_id, meta={"carry": carry, **info})
+            except Exception as _e:
+                log.warning(f"rollover journal append failed: {_e}")
+            rollover.archive_async(channel_id, old)
+            rollover.daily_note(
+                self.memory.memory_dir,
+                f"rolled over channel {channel_id}: {info['messages_before']} messages "
+                f"-> {len(carry)} ({info['tokens_before']} tokens, idle {idle:.0f}s)",
+            )
+            log.info(f"rollover: channel {channel_id} {info['messages_before']} -> {len(carry)} messages")
+            return info
+        except Exception as _e:  # noqa: BLE001 — a rollover must never break a turn
+            log.warning(f"rollover failed (non-fatal): {_e}")
+            return None
+
     @with_status
     async def respond(self, user_message: str | list, channel_id: str = "default") -> str:
         # THE VEIL (inbound): redact the user's own text ONCE at entry,
@@ -1306,6 +1361,15 @@ class GaladrielAgent:
         user_message, _veil_in = redact_secrets(user_message)
         if _veil_in:
             log.warning("veil(inbound): redacted %d secret(s)" % len(_veil_in))
+        # THE ROLLOVER: a cold, large thread is replaced by a small carry
+        # BEFORE the new user message is appended, so the carry is the base.
+        self._maybe_rollover(channel_id)
+        try:
+            return await self._respond_inner(user_message, channel_id)
+        finally:
+            self._stamp_turn_end(channel_id)
+
+    async def _respond_inner(self, user_message: str | list, channel_id: str) -> str:
         messages = self._get_messages(channel_id)
         messages.append({"role": "user", "content": user_message})
         try:
