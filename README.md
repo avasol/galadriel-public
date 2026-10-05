@@ -151,6 +151,10 @@ Issues and PRs welcome. The [issues](https://github.com/avasol/galadriel-public/
 
 Before opening a PR: run `pytest` — the provider parity suite and tool-repair tests must pass. Self-modification contributions should include a note on what guard or test prevents regression.
 
+## Made by
+
+[Isildur](https://aedelgard.com/isildur) — [Thomas Avasol](https://millenion.se), Millenion AB. The open engine behind [Aedelgard](https://aedelgard.com).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
