@@ -400,6 +400,26 @@ TOOL_DEFINITIONS = [
             "required": [],
         },
     },
+    {
+        "name": "look",
+        "description": (
+            "Open your eyes on a local image file: reads a PNG/JPEG/GIF/WebP from disk "
+            "and places it into your own visual context — you will actually SEE it, "
+            "exactly as if the user had pasted it. Use for screenshots you captured, "
+            "images you generated or downloaded, or image files the user references. "
+            "Oversized images are downscaled automatically."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or relative path to the image file.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
 ]
 
 
@@ -477,6 +497,11 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
         return await toolshed.execute(inputs["action"], inputs.get("packages", ""))
     elif name == "read_file":
         return await _read_file(inputs["path"])
+    elif name == "look":
+        from . import look as _look
+        return await asyncio.get_running_loop().run_in_executor(
+            None, _look.look, inputs["path"],
+        )
     elif name == "write_file":
         return await _write_file(inputs["path"], inputs["content"])
     elif name == "memory_log":

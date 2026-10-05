@@ -1779,7 +1779,7 @@ class GaladrielAgent:
                         log.warning(f"veil: redacted {len(_veil)} secret(s) from {tool_name}: "
                                     + ", ".join(f"{k}:{fp}" for k, fp in _veil))
 
-                    if len(result) > 15000:
+                    if isinstance(result, str) and len(result) > 15000:
                         result = result[:15000] + "\n...[truncated]"
 
                     tool_results.append({
