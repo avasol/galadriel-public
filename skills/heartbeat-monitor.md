@@ -2,9 +2,8 @@
 
 - version: 1.0
 - sealed: 2026-08-21
-- origin: procedure — Lord Isildur's observation: the heartbeat machinery in every
-  Aedelgard body is identical to the private harness; a skill should ship as default
-  so every body knows the practice correctly without improvising from TOOLS.md each time.
+- origin: procedure — the heartbeat machinery is identical in every deployment;
+  a skill ships as default so every body knows the practice correctly without improvising from TOOLS.md each time.
 - ledger: `memory/command_ledger/heartbeat-monitor.jsonl`
 - STATUS: ACTIVE
 

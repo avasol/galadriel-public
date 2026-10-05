@@ -59,7 +59,7 @@ _PATTERNS: list[tuple[str, re.Pattern, int]] = [
         r"\s*[=:]\s*['\"]?([^\s'\"]{8,})['\"]?\s*$"), 2),
     # The Aedelgard registration key, matched by its VALUE not its context, so
     # it is caught in EVERY shape — bare, as an env line, behind a
-    # `path:line:` prefix. Added 2026-09-30 (Altariel's finding): AEDELGARD_AEDK
+    # `path:line:` prefix. Added 2026-09-30 (a reviewer's finding): AEDELGARD_AEDK
     # carries none of the words in the env_value name list, so the one secret a
     # body most needs veiled slipped through every shape. `aedk_` is the normal
     # mint; `grk_` is admin-issued. The value is opaque (the broker hashes the

@@ -75,7 +75,7 @@ def test_find_secrets_reports_without_mutating():
     assert txt.endswith(" b")  # unchanged
 
 
-# ── Altariel's findings (2026-09-30) ────────────────────────────────────────
+# ── Reviewer findings ────────────────────────────────────────
 # Reproduced by her against a live body: AEDELGARD_AEDK was missed in EVERY
 # shape because the name carries none of the env_value keywords; and a
 # CARTO_OVERPASS_TOKEN echoed bare, or behind a `grep -n`/`Select-String`

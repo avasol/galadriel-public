@@ -13,13 +13,13 @@ def test_read_compass_from_json(tmp_path):
     cfile.write_text(json.dumps({
         "focused": "warden",
         "ambient": ["aedelgard"],
-        "dormant": ["vinga"]
+        "dormant": ["side-project"]
     }))
 
     st = compass.read_compass(cfg)
     assert st["focused"] == "warden"
     assert st["ambient"] == ["aedelgard"]
-    assert st["dormant"] == ["vinga"]
+    assert st["dormant"] == ["side-project"]
     assert compass.get_focused(cfg) == "warden"
 
 

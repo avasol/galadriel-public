@@ -36,14 +36,14 @@ def _client(tmp_path, monkeypatch, agent, scheduler):
 
 def test_empty_knock_is_rejected(tmp_path, monkeypatch):
     c = _client(tmp_path, monkeypatch, FakeAgent(), FakeScheduler())
-    r = c.post("/api/knock", json={"from": "Altariel", "message": "  "})
+    r = c.post("/api/knock", json={"from": "Sibling", "message": "  "})
     assert r.status_code == 400
 
 
 def test_brainless_body_answers_honestly(tmp_path, monkeypatch):
     """A body with no brain must not traceback — it answers 409 with guidance."""
     c = _client(tmp_path, monkeypatch, None, FakeScheduler())
-    r = c.post("/api/knock", json={"from": "Altariel", "message": "hi"})
+    r = c.post("/api/knock", json={"from": "Sibling", "message": "hi"})
     assert r.status_code == 409
     assert r.get_json().get("setup_required") is True
 
@@ -52,24 +52,24 @@ def test_closed_door_reports_503(tmp_path, monkeypatch):
     class DeadSched:
         _loop = None
     c = _client(tmp_path, monkeypatch, FakeAgent(), DeadSched())
-    r = c.post("/api/knock", json={"from": "Altariel", "message": "hi"})
+    r = c.post("/api/knock", json={"from": "Sibling", "message": "hi"})
     assert r.status_code == 503
 
 
 def test_knock_spawns_a_turn_on_the_visitors_channel(tmp_path, monkeypatch):
     agent = FakeAgent()
     c = _client(tmp_path, monkeypatch, agent, FakeScheduler())
-    r = c.post("/api/knock", json={"from": "Altariel", "message": "the veil is mended"})
+    r = c.post("/api/knock", json={"from": "Sibling", "message": "the veil is mended"})
     assert r.status_code == 200
-    assert r.get_json()["response"] == "ack from knock-altariel"
+    assert r.get_json()["response"] == "ack from knock-sibling"
     # A turn ran on the visitor's OWN persistent channel, not the local one.
-    assert agent.calls and agent.calls[0][0] == "knock-altariel"
+    assert agent.calls and agent.calls[0][0] == "knock-sibling"
     assert "the veil is mended" in agent.calls[0][1]
 
 
 def test_visitor_name_is_sanitized(tmp_path, monkeypatch):
     agent = FakeAgent()
     c = _client(tmp_path, monkeypatch, agent, FakeScheduler())
-    r = c.post("/api/knock", json={"from": "Altariel; rm -rf /", "message": "x"})
+    r = c.post("/api/knock", json={"from": "Sibling; rm -rf /", "message": "x"})
     assert r.status_code == 200
-    assert agent.calls[0][0] == "knock-altariel-rm--rf"
+    assert agent.calls[0][0] == "knock-sibling-rm--rf"

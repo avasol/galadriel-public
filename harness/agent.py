@@ -791,7 +791,7 @@ class GaladrielAgent:
 
         # THE MIRROR: extended thinking on the Anthropic path. 0 disables.
         # Budget clamped to the provider floor (1024) and to max_tokens-1024
-        # so the answer always has room. Ported from the private harness.
+        # so the answer always has room.
         _mb = int(os.environ.get("AGENT_THINKING_BUDGET", "0"))
         self.thinking_budget = 0 if _mb <= 0 else max(
             1024, min(_mb, self.max_tokens - 1024))

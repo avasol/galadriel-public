@@ -8,7 +8,7 @@ build/
 .eggs/
 memory/*.md
 memory/*.json
-# Operational-log exhaust (2026-08-26, ported from galadriel private harness):
+# Operational-log exhaust:
 # NOT curated memory — raw per-turn telemetry (tool-cascade traces, full
 # cached-prefix dumps, the append-only conversation journal). mempalace
 # mines by extension (.jsonl is READABLE); without these excludes a

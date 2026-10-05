@@ -1,8 +1,8 @@
 # THE VEIL — Value Registry (design spec)
 
-*Status: SPEC ONLY — not built. Parity test first, hot path, needs Lord Isildur's
-go and Altariel's review against her probe. Drafted 2026-09-30 in answer to
-Altariel's finding that the pattern set cannot catch a secret echoed with no
+*Status: SPEC ONLY — not built. Parity test first, hot path, needs the maintainer's
+go and a reviewer's review against her probe. Drafted 2026-09-30 in answer to
+a reviewer's finding that the pattern set cannot catch a secret echoed with no
 NAME= context.*
 
 ---
@@ -38,7 +38,7 @@ with, from the two places they legitimately live:
 - **The keyring** — the unsealed ring (provider + capability keys), the same
   values `harness.keyring.load` / `local_keyring.load` already return.
 
-Optional, and worth debating with Altariel:
+Optional, and worth debating in review:
 
 - **Session-learned values.** A secret caught by *pattern* anywhere during the
   session is remembered, and matched by *value* everywhere after. This is the
@@ -111,7 +111,7 @@ key on `/keys` mid-session must have it shielded from the next tool result on).
    contains a registered value verbatim after a redaction pass.
 8. Same value → same `fp6` whether caught by pattern or by registry.
 
-## Open questions for Altariel's review
+## Open questions for review
 
 1. **Source set** — `.env`-named + ring only, or also session-learned values
    (with a cap)? I lean *both*: session-learning is what closes the class.
@@ -124,5 +124,5 @@ key on `/keys` mid-session must have it shielded from the next tool result on).
 ---
 
 *SPEC ONLY. Nothing here is built. The parity test comes first; the empty
-registry path must be provably inert. Altariel reviews against her probe; Lord
-Isildur holds the go.*
+registry path must be provably inert. An independent review checks it against a probe; the
+maintainer holds the go.*

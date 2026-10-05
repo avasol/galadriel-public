@@ -700,7 +700,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             # Friendly name LEADS (label); raw id is demoted to subtext.
             # The reverse invited a costly misclick: two near-identical raw
             # ids (claude-opus-4-8 vs claude-sonnet-4-6) as the prominent
-            # label, human name buried in grey — 2026-07-25, Lord Isildur
+            # label, human name buried in grey — 2026-07-25
             # meant Sonnet 4.6 and landed on Opus 4.8.
             options.append(discord.SelectOption(
                 label=((m.get("display_name") or m["id"]))[:100],

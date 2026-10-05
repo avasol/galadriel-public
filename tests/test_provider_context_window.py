@@ -1,11 +1,11 @@
 """The provider-keyed context window map is LIVE (2026-09-30).
 
 _PROVIDER_CONTEXT_WINDOWS was populated at two discovery sites and read
-NOWHERE — a half-built seam (Altariel's max-tokens plan caught it; her "a
+NOWHERE — a half-built seam (a review of the max-tokens plan caught it; the "a
 Bedrock row could leak onto a direct id" worry was already in the tree). These
 tests pin the fix: the map is consulted, keyed on the NORMALIZED provider, and
 strictly additive — a bare-id discovery value still wins, so nothing regresses.
-Run: /home/ubuntu/.venv/bin/python -m pytest tests/test_provider_context_window.py -q
+Run: python -m pytest tests/test_provider_context_window.py -q
 """
 from harness import agent as A
 

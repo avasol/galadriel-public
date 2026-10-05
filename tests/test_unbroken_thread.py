@@ -119,7 +119,7 @@ class TestTrimReceipt:
         text = _render_recovery_advisory("max_tokens_recovery_123")
         assert "POST-RECOVERY-ADVISORY" in text
         assert "max_tokens_recovery_123" in text
-        # The private harness's legacy wording keeps its recall guidance.
+        # The legacy wording keeps its recall guidance.
         assert "palace_search" in text
 
     def test_plan_archive_dir_matches_archive_layout(self):

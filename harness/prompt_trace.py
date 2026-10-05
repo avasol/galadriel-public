@@ -1,6 +1,6 @@
 """THE GLASS PROMPT — full visibility into every prompt as it enters the model.
 
-Lord Isildur's order (2026-07-30): "enough debugging in the aedelgard body
+the maintainer's order (2026-07-30): "enough debugging in the aedelgard body
 that we can thoroughly evaluate the prompts as they enter and are executed."
 
 Every provider call is traced to memory/prompt_trace/YYYY-MM-DD.jsonl (UTC):

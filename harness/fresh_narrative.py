@@ -1,7 +1,6 @@
 """THE FRESH NARRATIVE — Phase 0 (SHADOW) + the local cascade archive.
 
-Ported from the galadriel harness (2026-07-30, Lord Isildur's order:
-"Rebuild and adoption"). Two duties, both at zero prompt expense
+Two duties, both at zero prompt expense
 (cascades leave the CONTEXT, never EXISTENCE — disk is free, prompt
 tokens are not):
 

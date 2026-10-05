@@ -105,8 +105,6 @@ async def _run_mempalace(args: list[str], timeout: int) -> tuple[int, str, str]:
             # every subsequent mine (even a tiny palace_add_drawer) fails
             # instantly with "held by PID <orphan>" until it exits on its
             # own. Kill it here so a timeout is contained to this one call.
-            # (Ported from galadriel commit 7cf47e9, the private harness's
-            # lock-cascade fix, per the Canon of Descent.)
             try:
                 proc.kill()
                 await proc.wait()
