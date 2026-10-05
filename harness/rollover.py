@@ -14,8 +14,9 @@ So: the thread is archived (palace) and replaced IN PLACE by a small CARRY:
 Tool calls, tool results and image payloads are not carried; the journal keeps
 them.
 
-The carry is journaled as a `[rollover]` event (meta.carry) so a restart
-rebuilds the same thread. Kill switch: GALADRIEL_ROLLOVER=0.
+The carry is journaled as a `[rollover]` event (meta.carry), so a journal
+replay can rebuild the same thread (this engine does not replay the journal
+into live history at boot yet). Kill switch: GALADRIEL_ROLLOVER=0.
 """
 from __future__ import annotations
 
