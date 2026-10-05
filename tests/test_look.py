@@ -1,4 +1,4 @@
-"""THE EYES — look(path) tests (2026-07-31, Altariel's feature request).
+"""THE EYES — look(path) tests.
 
 The tool places a local image file into the model's own visual context by
 returning tool_result content blocks (image + caption). Everything that can

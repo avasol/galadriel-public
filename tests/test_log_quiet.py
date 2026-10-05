@@ -1,16 +1,11 @@
 """THE QUIET LOG — the werkzeug access-line filter must drop success, keep error.
 
-Born 2026-09-22 after the journald log was found spammed by the relay's
-`GET /api/local/dequeue` long-poll (every ~2s, 204) and per-request httpx
-lines. The filter is categorical on purpose: a path whitelist always loses to
-the next poller.
-
-REWRITTEN 2026-09-22 (v2) — the v1 test fed SYNTHETIC CLEAN records and so
-verified the regex, not the pipeline. The live filter was half-alive for hours:
-werkzeug ANSI-colors the request text before emitting it, so `HTTP/1.1"` never
-matched. `test_real_werkzeug_request_is_dropped` now drives an ACTUAL Flask
-server and asserts the real emitted record is dropped — substance, not shape.
-Every unit record below is ANSI-wrapped to mirror what werkzeug really sends.
+The filter is categorical on purpose: a path whitelist always loses to the next
+poller. werkzeug ANSI-colours the request text before emitting it, so a regex
+tested only on clean synthetic records can pass while the live filter does
+nothing. `test_real_werkzeug_request_is_dropped` therefore drives an ACTUAL
+Flask server and asserts the real emitted record is dropped; every unit record
+below is ANSI-wrapped to mirror what werkzeug really sends.
 """
 
 import io
@@ -80,3 +75,50 @@ def test_quiet_log_noise_is_idempotent_and_sets_httpx():
     wk = logging.getLogger("werkzeug")
     assert sum(isinstance(x, _WerkzeugPollFilter) for x in wk.filters) == 1
     assert logging.getLogger("httpx").level == logging.WARNING
+
+
+def test_real_werkzeug_request_is_dropped():
+    """THE SUBSTANCE TEST: drive a real Flask server, assert the real record
+    werkzeug emits is dropped by the filter. This is what v1 lacked — it proves
+    the ANSI trap is closed on the actual pipeline, not on a fixture."""
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers, root.level
+    root.handlers = [handler]
+    root.setLevel(logging.INFO)
+
+    wk = logging.getLogger("werkzeug")
+    quiet_log_noise()  # install the filter under test
+
+    app = Flask("quiet_probe")
+
+    @app.route("/api/local/dequeue")
+    def _dq():
+        return ("", 204)
+
+    port = 8771
+    t = threading.Thread(
+        target=lambda: app.run(host="127.0.0.1", port=port,
+                               use_reloader=False, threaded=True),
+        daemon=True,
+    )
+    t.start()
+    time.sleep(2.5)
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/api/local/dequeue", timeout=5)
+        time.sleep(0.6)
+        captured = buf.getvalue()
+        assert "api/local/dequeue" not in captured, (
+            f"access line leaked through the live filter:\n{captured!r}"
+        )
+        # And the banner (also emitted by the real server) is gone too.
+        assert "Running on" not in captured and "development server" not in captured
+    finally:
+        root.handlers = saved_handlers
+        root.setLevel(saved_level)
+        # remove our filter so it doesn't leak into other tests
+        for f in list(wk.filters):
+            if isinstance(f, _WerkzeugPollFilter):
+                wk.removeFilter(f)
