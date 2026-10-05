@@ -639,6 +639,16 @@ class Scheduler:
         # Disable heartbeat
         self.rest()
 
+        # Digest today's command-ledger records into the daily log BEFORE the
+        # palace mine, so every command run becomes searchable overnight.
+        try:
+            from . import reflex_arc
+            memory_dir = Path(self.agent.memory.memory_dir)
+            reflex_arc.append_ledger_digest(
+                memory_dir, memory_dir / "command_ledger")
+        except Exception as e:
+            log.warning(f"Goodnight: could not append ledger digest: {e}")
+
         # Sync today's daily logs into the palace before the day closes
         try:
             from . import palace

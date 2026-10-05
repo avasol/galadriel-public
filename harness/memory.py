@@ -212,6 +212,21 @@ class MemoryManager:
             name = active_file.read_text(encoding="utf-8").strip()
             return name or None
 
+    def _load_armoury_index(self) -> str:
+        """Load the compact index of self-authored bin/ commands.
+
+        The bin directory comes from GALADRIEL_BIN_DIR (default "bin"). Any
+        error yields "" so a missing or unreadable directory can never break
+        the prompt. The index only changes when a command file changes, so it
+        stays cache-friendly in the stable block.
+        """
+        try:
+            from . import reflex_arc
+            bin_dir = Path(os.environ.get("GALADRIEL_BIN_DIR", "bin"))
+            return reflex_arc.armoury_index_text(bin_dir)
+        except Exception:
+            return ""
+
     def _no_palace_mode(self) -> bool:
         """True when this session runs in stateless / no-palace mode
         (GALADRIEL_NO_PALACE=1). Local re-check of tools.palace_disabled(),
@@ -258,6 +273,10 @@ class MemoryManager:
         extras = self._load_extra_context_files()
         if extras:
             parts.append(f"# Project Context\n\n{extras}")
+
+        armoury = self._load_armoury_index()
+        if armoury:
+            parts.append(armoury)
 
         if not parts:
             return "You are Galadriel, a helpful AI assistant."
