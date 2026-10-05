@@ -22,6 +22,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("galadriel")
 
+# Silence high-frequency transport chatter (successful access lines, the
+# dev-server banner, per-request httpx INFO) before the web server starts.
+from harness.log_quiet import quiet_log_noise
+
+quiet_log_noise()
+
 
 def start_tower(agent, scheduler):
     """Run the Tower Flask app in a background thread."""
