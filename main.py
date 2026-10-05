@@ -132,6 +132,11 @@ def main():
     # Attach job_watcher to agent so it can be referenced
     agent.job_watcher = job_watcher
 
+    # Termination as a memory act: install the last-word handlers now that both
+    # the agent and the scheduler exist, before any event loop or bot starts.
+    from harness.last_word import install as install_last_word
+    install_last_word(agent, scheduler)
+
     # Start Tower in a background thread
     tower_thread = threading.Thread(
         target=start_tower, args=(agent, scheduler), daemon=True
