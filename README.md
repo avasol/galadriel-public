@@ -3,7 +3,6 @@
 **The open engine behind [Aedelgard](https://aedelgard.com) — a persistent AI agent with sovereign memory, a model-agnostic brain, and the ability to improve its own code.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-Aedelgard-5865F2?logo=discord&logoColor=white)](https://discord.gg/TODO)
 
 ---
 
