@@ -759,6 +759,19 @@ def _is_request_too_large_error(exc: Exception) -> bool:
 class GaladrielAgent:
     """Stateful conversational agent backed by Claude with tool use."""
 
+    # One list, one reset: every per-channel dict that belongs to ONE
+    # conversation thread and must die when a fresh thread starts. Separate
+    # pop-lists drifted — /new kept a stale frozen system prompt (old clock,
+    # old daily log). Add new per-thread state here. Deliberately NOT here:
+    # _last_turn_end is the idle clock (survives a reset), and _thinking_modes
+    # / _summarized_display are keyed by user/model, not by thread.
+    _THREAD_SCOPED_STATE = (
+        "_frozen_system",
+        "_post_recovery_archive_tag",
+        "_output_ceiling_streak",
+        "_last_warn_tier",
+    )
+
     def __init__(
         self,
         api_key: str = None,
@@ -1332,7 +1345,7 @@ class GaladrielAgent:
                 return None
             old = list(msgs)
             msgs[:] = carry
-            getattr(self, "_frozen_system", {}).pop(channel_id, None)
+            self._reset_channel_state(channel_id)
             info = {
                 "channel": channel_id,
                 "idle_s": idle,
@@ -1829,6 +1842,16 @@ class GaladrielAgent:
                 continue
 
 
+    def _reset_channel_state(self, channel_id) -> None:
+        """Clear every per-thread dict for one channel. Other channels untouched.
+
+        Never raises on a missing attribute.
+        """
+        for name in self._THREAD_SCOPED_STATE:
+            d = getattr(self, name, None)
+            if isinstance(d, dict):
+                d.pop(channel_id, None)
+
     def clear_history(self, channel_id: str = "default"):
         self.conversations.pop(channel_id, None)
         # The journal keeps everything; the history view cuts at this marker.
@@ -1838,9 +1861,7 @@ class GaladrielAgent:
         except Exception:
             pass
         # A fresh channel starts with no recovery advisory — clear stale state.
-        self._post_recovery_archive_tag.pop(channel_id, None)
-        self._output_ceiling_streak.pop(channel_id, None)
-        self._frozen_system.pop(channel_id, None)
+        self._reset_channel_state(channel_id)
 
     async def pop_and_archive_history(self, channel_id: str = "default") -> int:
         """Archive the channel's conversation to the palace, then clear it.
@@ -1856,8 +1877,7 @@ class GaladrielAgent:
         """
         messages = self.conversations.pop(channel_id, None)
         # Clear per-channel transient state alongside the history.
-        self._post_recovery_archive_tag.pop(channel_id, None)
-        self._output_ceiling_streak.pop(channel_id, None)
+        self._reset_channel_state(channel_id)
         if not messages:
             return 0
         try:
