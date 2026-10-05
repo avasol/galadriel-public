@@ -1,8 +1,8 @@
-"""THE LAST WORD — termination-as-persistence. Sealed 2026-07-15.
+"""THE LAST WORD — termination as persistence.
 
-Covers the covenant: manual/deliberate (wake armed) == no persist;
-otherwise == persist by default, with a recovery wake outside the
-nightly stop window.
+A deliberate shutdown (a wake already armed) persists nothing; any other
+termination persists a last-word line, and arms a recovery wake unless it
+falls inside the optional configured nightly stop window.
 """
 
 import signal
