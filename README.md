@@ -26,6 +26,7 @@ This is **not** a product. It is the open engine that [Aedelgard](https://aedelg
 | **🔧 Self-Modification** | The agent can edit its own harness, restart itself, and resume — with a one-shot wake that survives the restart. |
 | **💭 Ambient Reflection** | A silent background loop that curates memory, notices patterns, and files what a purely reactive agent would forget. |
 | **🛡️ Scar Tissue** | Compound failure patterns that graduate into mandatory checks and deterministic tests. [INCIDENTS.md](INCIDENTS.md) tracks them. |
+| **🔄 Long-running life** | Rollover to a fresh context when the cache goes cold, a memory save on shutdown, a local cost ledger, and memory for its own commands. See below. |
 | **🌐 Interfaces** | Discord bot, Tower web UI (localhost:8080), REST API, and the [Xeneon Edge Companion HUD](https://github.com/avasol/xeneon-edge-companion). |
 
 ## Interfaces & peripherals
@@ -93,7 +94,21 @@ Three layers, all local, all zero-token retrieval:
 | **Temporal Knowledge Graph** | SQLite | Structured facts with validity windows (`valid_from` → `valid_to`) |
 | **Identity & Cognition** | Markdown + SQLite Diary | Values, constraints, session diary, ambient reflections |
 
-Built on [MemPalace](https://github.com/MemPalace/mempalace), an independent local-first memory library. The harness adds 13 palace tools (17 total) wired into the agent's lifecycle. Search by meaning. Zero API spend on retrieval.
+Built on [MemPalace](https://github.com/MemPalace/mempalace), an independent local-first memory library. The harness adds 13 palace tools (18 tools in total) wired into the agent's lifecycle. Search by meaning. Zero API spend on retrieval.
+
+## Living for a long time
+
+An agent that runs for weeks has problems a chat window never sees. These modules handle them. Each one fails safe: if it breaks, the agent carries on.
+
+| Module | What it does | Settings |
+|---|---|---|
+| **Rollover** (`harness/rollover.py`) | When a long thread has gone idle and its prompt cache has expired, the next message starts in a fresh context. The last few exchanges are carried over verbatim, and the full thread is archived to the palace. This saves re-paying for a cold, very long context. | `GALADRIEL_ROLLOVER=0` turns it off. `GALADRIEL_ROLLOVER_IDLE_S` (default 300), `GALADRIEL_ROLLOVER_MIN_TOKENS` (default 60000), `GALADRIEL_ROLLOVER_KEEP` (default 2 exchanges). |
+| **Last word** (`harness/last_word.py`) | When the process is stopped without a planned restart, it writes a final note to the daily log and arms a one-shot wake, so the next start knows it was cut off. A planned restart already carries its own wake, so nothing extra is written. | `GALADRIEL_NIGHTLY_STOP_HOUR` (0–23, optional): if your machine stops on a schedule, no wake is armed after that hour. Unset means a wake is always armed. |
+| **Cost ledger** (`harness/cost_ledger.py`) | Estimates the agent's own spend from the token counts each provider returns, and writes it to `memory/cost_ledger.jsonl`. No network calls. | None. |
+| **Reflex arc** (`harness/reflex_arc.py`) | Keeps an index of the commands the agent has written for itself in `bin/`, with a run log in `memory/command_ledger/`. A command flagged as stale in its header refuses to run and points back to the playbook it came from. | `GALADRIEL_BIN_DIR` |
+| **Compass navigator** (`harness/compass_navigator.py`) | Switches between headings (projects) **you** have created, using each heading's name plus optional keywords in its own file. It never invents a heading. | `GALADRIEL_COMPASS_AUTOSHIFT=0` turns it off. |
+| **Look** (`harness/look.py`) | A tool that opens a local image file so the model can see it. | None. |
+| **Quiet log** (`harness/log_quiet.py`) | Hides successful web requests (2xx/3xx) and duplicate HTTP-client lines from the log, so errors stand out. 4xx/5xx lines are always logged. | None. |
 
 ## Threat model — read before judging
 
