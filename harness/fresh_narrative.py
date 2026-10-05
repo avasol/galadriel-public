@@ -26,6 +26,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .pathguard import is_mockish_dir
+
 log = logging.getLogger("galadriel.fresh_narrative")
 
 
@@ -51,6 +53,8 @@ def _append_jsonl(path: Path, record: dict) -> None:
 
 def archive_cascade(memory_dir, channel: str, turn_messages: list) -> None:
     """Persist one turn's full cascade verbatim. Non-fatal by design."""
+    if is_mockish_dir(memory_dir):  # object repr, not a path — never mkdir it
+        return
     try:
         if not turn_messages:
             return
@@ -85,6 +89,8 @@ def shadow_observe(memory_dir, channel: str, user_text: str,
                    buffer_messages: list) -> None:
     """Fire-and-forget Phase 0 measurement. Spawns a daemon thread so the
     live respond path pays nothing."""
+    if is_mockish_dir(memory_dir):  # object repr, not a path — never spawn
+        return
     # Snapshot cheap stats NOW (the buffer mutates during the cascade).
     buffer_tokens = sum(_est_tokens(m.get("content", "")) for m in buffer_messages)
     buffer_count = len(buffer_messages)

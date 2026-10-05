@@ -25,6 +25,7 @@ one reader (the Tower /api/debug/prompts, lazily).
 import hashlib
 import json
 import logging
+from .pathguard import is_mockish_dir
 from .redact import redact_text as _veil_text  # THE VEIL (sink)
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,6 +82,8 @@ def trace_call(memory_dir, *, channel: str, turn_id: str, seq: int,
                response=None) -> None:
     """Record one provider call. Call AFTER the response so usage numbers
     ride along. Non-fatal: a trace failure never touches a live turn."""
+    if is_mockish_dir(memory_dir):  # object repr, not a path — never mkdir it
+        return
     try:
         trace_dir = Path(memory_dir) / "prompt_trace"
         blobs = trace_dir / "blobs"
