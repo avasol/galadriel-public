@@ -1371,9 +1371,35 @@ class GaladrielAgent:
         # BEFORE the new user message is appended, so the carry is the base.
         self._maybe_rollover(channel_id)
         try:
-            return await self._respond_inner(user_message, channel_id)
+            reply = await self._respond_inner(user_message, channel_id)
         finally:
             self._stamp_turn_end(channel_id)
+        return self._maybe_auto_shift_compass(channel_id, reply)
+
+    def _maybe_auto_shift_compass(self, channel_id: str, reply: str) -> str:
+        """Let the compass auto-navigator re-evaluate FOCUSED after a turn.
+
+        Only completed user-facing turns qualify — scheduler ticks (whose
+        channel_id is a registered event key) are skipped. Disabled when
+        GALADRIEL_COMPASS_AUTOSHIFT is "0"/"false"/"off". On a shift, a
+        one-line italic note naming the new heading is appended to the reply.
+        """
+        try:
+            from .events import is_event
+            if is_event(channel_id):
+                return reply
+            flag = os.environ.get("GALADRIEL_COMPASS_AUTOSHIFT", "").strip().lower()
+            if flag in ("0", "false", "off"):
+                return reply
+            from .compass_navigator import auto_shift_compass
+            messages = self._get_messages(channel_id)
+            new_heading = auto_shift_compass(str(self.memory.config_dir), messages)
+            if new_heading:
+                note = f"*🧭 Compass shifted to **{new_heading}**.*"
+                return f"{reply}\n\n{note}" if reply else note
+        except Exception as _e:
+            log.warning(f"compass auto-shift failed: {_e}")
+        return reply
 
     async def _respond_inner(self, user_message: str | list, channel_id: str) -> str:
         messages = self._get_messages(channel_id)
