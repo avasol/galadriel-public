@@ -30,6 +30,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from .response_status import with_status, with_stream_status, record as record_response_status
+from . import cost_ledger
 from .redact import redact_secrets  # THE VEIL
 from .providers import make_provider
 from .thinking_preservation import (
@@ -1231,6 +1232,11 @@ class GaladrielAgent:
                 f"Tokens | input={inp} cache_read={cr} cache_write={cw} output={out}"
             )
             self.last_usage = {"input": inp, "cache_read": cr, "cache_write": cw, "output": out}
+            # Local spend ledger: estimate this call's cost from the usage above.
+            try:
+                cost_ledger.record(self.model, self.last_usage)
+            except Exception:
+                log.debug("Could not record usage to cost ledger", exc_info=True)
         except Exception:
             log.debug("Could not log usage fields", exc_info=True)
 
