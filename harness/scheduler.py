@@ -316,37 +316,37 @@ class Scheduler:
             log.info("One-shot wake pending from saved state — will fire shortly.")
 
         # Extension routine cron loops: one _cron_loop per enabled routine.
-          try:
-              data_root = Path(self.agent.memory.memory_dir).parent
-              for r in ex.routines(data_root):
-                  name = f"ext_{r['ext']}_{r['id']}"
-                  setattr(self, f"_last_{name}", None)
-                  try:
-                      hh, mm = r["at"].split(":")
-                      target_time = time(int(hh), int(mm))
-                  except Exception as e:
-                      log.warning(f"Extension routine [{name}] bad 'at' {r.get('at')!r}: {e}")
-                      continue
-                  task = asyncio.ensure_future(self._cron_loop(
-                      name=name,
-                      target_time=target_time,
-                      callback=lambda r=r: self._fire_extension_routine(r),
-                      workday_only=r["days"] == "workdays",
-                  ))
-                  self._extension_tasks.append(task)
-                  log.info(f"Extension routine [{name}] scheduled at {r['at']}")
-          except Exception as e:
-              log.warning(f"Could not schedule extension routines: {e}")
+        try:
+            data_root = Path(self.agent.memory.memory_dir).parent
+            for r in ex.routines(data_root):
+                name = f"ext_{r['ext']}_{r['id']}"
+                setattr(self, f"_last_{name}", None)
+                try:
+                    hh, mm = r["at"].split(":")
+                    target_time = time(int(hh), int(mm))
+                except Exception as e:
+                    log.warning(f"Extension routine [{name}] bad 'at' {r.get('at')!r}: {e}")
+                    continue
+                task = asyncio.ensure_future(self._cron_loop(
+                    name=name,
+                    target_time=target_time,
+                    callback=lambda r=r: self._fire_extension_routine(r),
+                    workday_only=r["days"] == "workdays",
+                ))
+                self._extension_tasks.append(task)
+                log.info(f"Extension routine [{name}] scheduled at {r['at']}")
+        except Exception as e:
+            log.warning(f"Could not schedule extension routines: {e}")
 
-          # Fire the on_boot hook for code extensions (best-effort).
-          try:
-              rt = ext_runtime.current()
-              if rt is not None:
-                  asyncio.ensure_future(rt.fire("on_boot"))
-          except Exception as e:
-              log.warning(f"on_boot hook failed: {e}")
+        # Fire the on_boot hook for code extensions (best-effort).
+        try:
+            rt = ext_runtime.current()
+            if rt is not None:
+                asyncio.ensure_future(rt.fire("on_boot"))
+        except Exception as e:
+            log.warning(f"on_boot hook failed: {e}")
 
-          # Unmined sweeper: re-mines palace batches whose mine was deferred by a
+        # Unmined sweeper: re-mines palace batches whose mine was deferred by a
         # lock collision or timeout (palace_mine_guard). Silent, no model calls.
         try:
             from . import palace as _palace
