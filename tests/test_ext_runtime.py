@@ -1,5 +1,5 @@
-"""EXTENSIONS P2 — the runtime that loads approved code extensions.
-docs/EXTENSIONS.md §5.2, §5.6, §5.7, §6, §11.2, §12.5. Written first."""
+"""The runtime that loads approved code extensions.
+docs/EXTENSIONS.md"""
 import asyncio
 import json
 import time
@@ -282,7 +282,7 @@ def test_reload_picks_up_new_code_after_reapproval(tmp_path):
     assert asyncio.run(rt.current().call("say", {"text": "x"})).startswith("spoke: ")
 
 
-# ── memory writing, by declared permission only (SPEC §5, 2026-10-06) ──
+# ── memory writing, by declared permission only ──
 
 def _code_perm(root, code, permissions):
     d = _code(root, code, tools=())

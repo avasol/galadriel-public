@@ -1,4 +1,4 @@
-"""EXTENSIONS P1 — wiring into the prompt, the backup and the scheduler.
+"""Extensions wired into the prompt and the scheduler.
 Acceptance tests, written first. Contract: docs/EXTENSIONS.md ."""
 import asyncio
 import json

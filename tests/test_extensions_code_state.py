@@ -1,5 +1,5 @@
-"""EXTENSIONS P2 — code extensions: validation and hash-pinned state.
-docs/EXTENSIONS.md §3, §6, §7, §11.2. Written first. Nothing here imports or runs
+"""Code extensions: validation and hash-pinned state.
+docs/EXTENSIONS.md Nothing here imports or runs
 extension code; that is harness/ext_runtime.py."""
 import json
 from pathlib import Path

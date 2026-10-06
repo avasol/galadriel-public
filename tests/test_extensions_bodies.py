@@ -1,4 +1,4 @@
-"""MANY BODIES, ONE MIND — extensions (docs/EXTENSIONS.md §12.2–12.4). Written first.
+"""extensions (docs/EXTENSIONS.md).
 
 Every function takes an optional body={'body_id', 'os'} so one test can play
 several bodies of the same mind over one shared data folder.

@@ -1,8 +1,6 @@
-"""EXTENSIONS (THE ANNEX) P1 — the core module. Acceptance tests, written first.
+"""Extensions — discovery, validation, approval, layers and routines.
 
-Contract: docs/EXTENSIONS.md §4, §5 (layers, routines, recipes), §7 (lifecycle).
-P1 is declarative only: a code extension is recognised but marked failed with a
-plain message, never executed.
+Contract: docs/EXTENSIONS.md (lifecycle).
 """
 import json
 from pathlib import Path

@@ -1,4 +1,4 @@
-"""MANY BODIES, ONE MIND — body identity (docs/EXTENSIONS.md §12.1). Written first."""
+"""body identity (docs/EXTENSIONS.md)."""
 import json
 from pathlib import Path
 
