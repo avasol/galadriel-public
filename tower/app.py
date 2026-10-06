@@ -551,15 +551,16 @@ def create_tower(agent, scheduler=None) -> Flask:
     from harness import ext_runtime as _rt
     from harness import body_identity as _bi
 
-    root = Path(agent.memory.memory_dir).resolve().parent
+    def _ext_root():
+        return Path(agent.memory.memory_dir).resolve().parent
 
     @app.route("/api/extensions", methods=["GET"])
     def api_extensions():
         try:
             return jsonify({
-                "extensions": _ext.discover(root),
-                "body": _bi.body_info(root),
-                "bodies": _bi.bodies(root),
+                "extensions": _ext.discover(_ext_root()),
+                "body": _bi.body_info(_ext_root()),
+                "bodies": _bi.bodies(_ext_root()),
                 "warning": "Code extensions run with the same power as the engine itself. Approve only code you trust.",
             })
         except Exception as e:
@@ -567,7 +568,7 @@ def create_tower(agent, scheduler=None) -> Flask:
             return jsonify({"error": str(e)}), 500
 
     def _fresh_extension(name):
-        for row in _ext.discover(root):
+        for row in _ext.discover(_ext_root()):
             if row["name"] == name:
                 return row
         return None
@@ -575,8 +576,8 @@ def create_tower(agent, scheduler=None) -> Flask:
     @app.route("/api/extensions/<name>/approve", methods=["POST"])
     def api_extension_approve(name):
         try:
-            _ext.approve(root, name)
-            _rt.reload(root)
+            _ext.approve(_ext_root(), name)
+            _rt.reload(_ext_root())
             return jsonify({"status": "ok", "extension": _fresh_extension(name)})
         except _ext.ExtensionError as e:
             return jsonify({"error": str(e)}), 404
@@ -587,8 +588,8 @@ def create_tower(agent, scheduler=None) -> Flask:
     @app.route("/api/extensions/<name>/disable", methods=["POST"])
     def api_extension_disable(name):
         try:
-            _ext.disable(root, name)
-            _rt.reload(root)
+            _ext.disable(_ext_root(), name)
+            _rt.reload(_ext_root())
             return jsonify({"status": "ok", "extension": _fresh_extension(name)})
         except _ext.ExtensionError as e:
             return jsonify({"error": str(e)}), 404
@@ -599,7 +600,7 @@ def create_tower(agent, scheduler=None) -> Flask:
     @app.route("/api/extensions/<name>/routines/<routine_id>/home", methods=["POST"])
     def api_extension_routine_home(name, routine_id):
         try:
-            _ext.set_home(root, name, routine_id)
+            _ext.set_home(_ext_root(), name, routine_id)
             return jsonify({"status": "ok"})
         except _ext.ExtensionError as e:
             return jsonify({"error": str(e)}), 404
@@ -611,8 +612,8 @@ def create_tower(agent, scheduler=None) -> Flask:
     def api_body_name():
         data = request.json or {}
         try:
-            info = _bi.rename(root, data.get("name"))
-            _bi.register(root)
+            info = _bi.rename(_ext_root(), data.get("name"))
+            _bi.register(_ext_root())
             return jsonify({"status": "ok", "body": info})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400

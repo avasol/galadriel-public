@@ -1,4 +1,7 @@
 .env
+/extensions/
+/body.json
+/bodies.json
 __pycache__/
 *.pyc
 *.pyo
