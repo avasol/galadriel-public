@@ -330,3 +330,16 @@ def test_permissions_are_listed_for_the_pane(tmp_path):
     _code_perm(tmp_path, "def register(ctx): pass\n", ["palace_write"])
     st = {e["name"]: e for e in ex.discover(tmp_path, body=WIN)}["voice"]
     assert st["permissions"] == ["palace_write"]
+
+
+def test_default_body_comes_from_instance_identity(tmp_path):
+    # Found by exercising the engine: reload(root) with no body left ctx.body as None.
+    from harness import body_identity as bi
+    _code(tmp_path, """
+def register(ctx):
+    ctx.tool("say", %r, lambda i: ctx.body["os"] + "/" + ctx.body["body_id"])
+""" % (DEF,))
+    ex.approve(tmp_path, "voice")
+    r = rt.reload(tmp_path)
+    me = bi.body_info(tmp_path)
+    assert asyncio.run(r.call("say", {})) == me["os"] + "/" + me["body_id"]
