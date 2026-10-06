@@ -9,6 +9,7 @@ import sys
 import logging
 import asyncio
 import threading
+from pathlib import Path
 from dotenv import load_dotenv
 
 # The native body writes its .env into a per-OS user data dir and points
@@ -119,6 +120,24 @@ def main():
         approval_callback=approval_callback,
     )
     log.info(f"Agent initialized (model: {agent.model})")
+
+    # Register the body and load code extensions right after the agent exists.
+    # Best-effort: a failure here must never prevent the engine from booting.
+    data_root = Path(memory_dir).parent
+    try:
+        from harness import body_identity
+        reg = body_identity.register(data_root)
+        log.info(f"Body registered: {len(reg)} body(ies) known")
+    except Exception as e:
+        log.warning(f"Body registration failed: {e}")
+    try:
+        from harness import ext_runtime
+        rt = ext_runtime.reload(data_root)
+        log.info(f"Extensions loaded: {rt.loaded}")
+        if rt.errors:
+            log.warning(f"Extension load errors: {rt.errors}")
+    except Exception as e:
+        log.warning(f"Extension reload failed: {e}")
 
     # Create scheduler (no bot yet — will be wired after bot creation)
     scheduler = Scheduler(agent=agent, config_dir=config_dir)

@@ -55,6 +55,20 @@ def _should_arm_wake(now: datetime) -> bool:
     return now.hour < stop_hour
 
 
+def _extension_goodbye() -> None:
+    """Give code extensions a bounded chance to run their on_termination hook.
+
+    Best-effort and time-boxed (2s) so a dying process can never hang on it.
+    """
+    try:
+        from harness import ext_runtime
+        rt = ext_runtime.current()
+        if rt is not None:
+            rt.fire_sync("on_termination", timeout=2.0)
+    except Exception as e:
+        log.warning(f"LAST WORD: extension on_termination failed (non-fatal): {e}")
+
+
 def _close_palace() -> None:
     """Flush and close the live collection held in the palace module.
 
@@ -139,8 +153,10 @@ def install(agent, scheduler) -> None:
             except Exception as e:  # never block death on a persist failure
                 log.error(f"LAST WORD failed: {e}")
             finally:
-                # Always try to close the palace cleanly, regardless of persist
-                # outcome. Prevents index truncation on mid-write kills.
+                # Give extensions a bounded goodbye, then always try to close
+                # the palace cleanly, regardless of persist outcome. Prevents
+                # index truncation on mid-write kills.
+                _extension_goodbye()
                 _close_palace()
         # Hand back to the default death path.
         if signum == signal.SIGINT:

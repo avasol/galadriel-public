@@ -315,7 +315,38 @@ class Scheduler:
             self._wake_task = asyncio.ensure_future(self._wake_loop())
             log.info("One-shot wake pending from saved state — will fire shortly.")
 
-        # Unmined sweeper: re-mines palace batches whose mine was deferred by a
+        # Extension routine cron loops: one _cron_loop per enabled routine.
+          try:
+              data_root = Path(self.agent.memory.memory_dir).parent
+              for r in ex.routines(data_root):
+                  name = f"ext_{r['ext']}_{r['id']}"
+                  setattr(self, f"_last_{name}", None)
+                  try:
+                      hh, mm = r["at"].split(":")
+                      target_time = time(int(hh), int(mm))
+                  except Exception as e:
+                      log.warning(f"Extension routine [{name}] bad 'at' {r.get('at')!r}: {e}")
+                      continue
+                  task = asyncio.ensure_future(self._cron_loop(
+                      name=name,
+                      target_time=target_time,
+                      callback=lambda r=r: self._fire_extension_routine(r),
+                      workday_only=r["days"] == "workdays",
+                  ))
+                  self._extension_tasks.append(task)
+                  log.info(f"Extension routine [{name}] scheduled at {r['at']}")
+          except Exception as e:
+              log.warning(f"Could not schedule extension routines: {e}")
+
+          # Fire the on_boot hook for code extensions (best-effort).
+          try:
+              rt = ext_runtime.current()
+              if rt is not None:
+                  asyncio.ensure_future(rt.fire("on_boot"))
+          except Exception as e:
+              log.warning(f"on_boot hook failed: {e}")
+
+          # Unmined sweeper: re-mines palace batches whose mine was deferred by a
         # lock collision or timeout (palace_mine_guard). Silent, no model calls.
         try:
             from . import palace as _palace
@@ -621,6 +652,32 @@ class Scheduler:
         except Exception as e:
             log.warning(f"Ambient bookkeeping skipped ({e}).")
 
+    async def _fire_extension_routine(self, routine):
+        """Fire one extension routine: look up its CURRENT prompt and send it
+        on the extension's own channel. Best-effort — never breaks the loop."""
+        try:
+            data_root = Path(self.agent.memory.memory_dir).parent
+            ext = routine.get("ext")
+            rid = routine.get("id")
+            current = None
+            for r in ex.routines(data_root):
+                if r.get("ext") == ext and r.get("id") == rid:
+                    current = r
+                    break
+            if current is None:
+                log.info(f"Extension routine [{ext}:{rid}] no longer active — skipping.")
+                return
+            prompt = current.get("prompt", "")
+            log.info(f"Extension routine [{ext}:{rid}] FIRING.")
+            await self._send_agent_message(
+                prompt=f"[SYSTEM:ROUTINE:{ext}:{rid}] {prompt}",
+                channel_id=f"ext:{ext}",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.exception(f"Extension routine [{routine.get('ext')}:{routine.get('id')}] error: {e}")
+
     async def _goodnight_routine(self):
         """Goodnight — 21:00 CET, then REST.
 
@@ -642,6 +699,14 @@ class Scheduler:
         )
         # Disable heartbeat
         self.rest()
+
+        # Fire the on_goodnight hook for code extensions (best-effort).
+        try:
+            rt = ext_runtime.current()
+            if rt is not None:
+                asyncio.ensure_future(rt.fire("on_goodnight"))
+        except Exception as e:
+            log.warning(f"on_goodnight hook failed: {e}")
 
         # Digest today's command-ledger records into the daily log BEFORE the
         # palace mine, so every command run becomes searchable overnight.
