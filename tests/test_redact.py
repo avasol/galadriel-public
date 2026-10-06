@@ -41,10 +41,10 @@ def test_multiple_kinds_in_one_blob():
 def test_env_dump_keeps_names_redacts_values():
     env = ("MODEL=claude-sonnet-5\n"
            "EDGE_TOKEN=abcdef0123456789XYZ\n"
-           "DAILY_COST_LIMIT=100\n")
+           "LOG_LEVEL=INFO\n")
     clean, hits = redact_text(env)
     assert "MODEL=claude-sonnet-5" in clean
-    assert "DAILY_COST_LIMIT=100" in clean
+    assert "LOG_LEVEL=INFO" in clean
     assert "abcdef0123456789XYZ" not in clean
     assert "EDGE_TOKEN=<REDACTED:env_value:" in clean
     assert len(hits) >= 1
