@@ -250,6 +250,23 @@ class MemoryManager:
                     content = _strip_palace_content(content)
                 parts.append(content)
 
+        # EXTENSIONS — approved extensions' prompt layers, then the body line.
+        # Each wrapped so a broken extension can never break prompt assembly.
+        try:
+            from . import extensions as _extensions
+            _layers = _extensions.layers_text(self.memory_dir.parent)
+            if _layers:
+                parts.append(_layers)
+        except Exception:
+            pass
+        try:
+            from . import body_identity as _body_identity
+            _body_line = _body_identity.prompt_line(self.memory_dir.parent)
+            if _body_line:
+                parts.append(_body_line)
+        except Exception:
+            pass
+
         # SCAR TISSUE — earned gates, directly beneath the soul, isolated from
         # SOUL.md so a soul edit can never wipe lessons bought with failure.
         scars_txt = self._read_file(self.config_dir / SCARS_FILE)

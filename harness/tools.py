@@ -476,7 +476,25 @@ def visible_tool_definitions() -> list:
         defs = [t for t in defs if t["name"] not in _PALACE_TOOL_NAMES]
     if bench_sandboxed():
         defs = [t for t in defs if t["name"] not in _BENCH_UNSAFE_TOOL_NAMES]
-    return list(defs)
+    out = list(defs)
+    # Extension tools: name, description, input_schema only; skip names already present.
+    try:
+        from . import ext_runtime as _rt
+        _cur = _rt.current()
+        if _cur is not None:
+            _present = {t["name"] for t in out}
+            for t in _cur.tool_definitions():
+                if t.get("name") in _present:
+                    continue
+                out.append({
+                    "name": t.get("name"),
+                    "description": t.get("description"),
+                    "input_schema": t.get("input_schema"),
+                })
+                _present.add(t.get("name"))
+    except Exception:
+        pass
+    return out
 
 
 async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir: str = None) -> str:
@@ -490,6 +508,14 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
     if bench_sandboxed() and name in _BENCH_UNSAFE_TOOL_NAMES:
         return ("[bench sandbox] filesystem/shell access is disabled during benchmark "
                 "evaluation; this tool is unavailable.")
+    # Extension tools dispatch early.
+    try:
+        from . import ext_runtime as _rt
+        _cur = _rt.current()
+        if _cur is not None and _cur.has_tool(name):
+            return await _cur.call(name, inputs)
+    except Exception:
+        pass
     if name == "run_shell":
         return await _run_shell(inputs["command"], inputs.get("working_dir", working_dir))
     elif name == "toolshed":

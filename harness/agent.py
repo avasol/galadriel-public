@@ -44,6 +44,7 @@ from .memory import MemoryManager
 from .journal import ConversationJournal
 from .tools import TOOL_DEFINITIONS, execute_tool
 from .safety import classify_command, format_safety_notice
+from harness import ext_runtime
 
 log = logging.getLogger("galadriel")
 
@@ -900,6 +901,7 @@ class GaladrielAgent:
         # Precompute tools-with-cache once. Tools never change at runtime,
         # so this object can be reused across every API call.
         self.tools = _build_cached_tools()
+        self._tools_gen = ext_runtime.generation()
 
         # Log stable block metadata on startup
         stable_text = self.memory.build_stable_text()
@@ -971,6 +973,13 @@ class GaladrielAgent:
         if channel_id not in self.conversations:
             self.conversations[channel_id] = []
         return self.conversations[channel_id]
+
+    def _current_tools(self):
+        """Return the cached tool list, rebuilding it when extensions reload."""
+        if getattr(self, "_tools_gen", None) != ext_runtime.generation():
+            self.tools = _build_cached_tools()
+            self._tools_gen = ext_runtime.generation()
+        return self.tools
 
     def _trim_history(
         self,
@@ -1383,10 +1392,24 @@ class GaladrielAgent:
         # THE ROLLOVER: a cold, large thread is replaced by a small carry
         # BEFORE the new user message is appended, so the carry is the base.
         self._maybe_rollover(channel_id)
+        reply = ""
         try:
             reply = await self._respond_inner(user_message, channel_id)
         finally:
             self._stamp_turn_end(channel_id)
+            # EXTENSIONS: fire the on_turn_end hook fire-and-forget, guarded so
+            # a broken extension can never break a turn.
+            try:
+                _cur = ext_runtime.current()
+                if _cur is not None:
+                    _user_txt = user_message if isinstance(user_message, str) else "[multimodal message]"
+                    asyncio.ensure_future(_cur.fire("on_turn_end", {
+                        "channel_id": channel_id,
+                        "user": _user_txt[:500],
+                        "reply": (reply or "")[:500],
+                    }))
+            except Exception:
+                pass
         return self._maybe_auto_shift_compass(channel_id, reply)
 
     def _maybe_auto_shift_compass(self, channel_id: str, reply: str) -> str:
@@ -1529,7 +1552,7 @@ class GaladrielAgent:
                 model=self.model,
                 max_tokens=self.max_tokens,
                 system=system_blocks,
-                tools=self.tools,
+                tools=self._current_tools(),
                 messages=messages_for_api,
             )
             try:
@@ -1808,6 +1831,32 @@ class GaladrielAgent:
                                 _flight.step(tool_name, f"[BLOCKED] Red-tier: {command}"[:160], ok=False)
                                 _tool_actions += 1
                                 continue
+
+                    if (ext_runtime.current() is not None
+                            and ext_runtime.current().has_tool(tool_name)
+                            and ext_runtime.current().tier(tool_name) == "red"):
+                        owner = ext_runtime.current().owner(tool_name)
+                        if self.approval_callback:
+                            approved = await self.approval_callback(
+                                f"extension tool {tool_name} ({owner}): {json.dumps(tool_input)[:600]}", "red")
+                            if not approved:
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_id,
+                                    "content": f"[BLOCKED] Denied: extension tool {tool_name}",
+                                })
+                                _flight.step(tool_name, f"[BLOCKED] Denied: extension tool {tool_name}"[:160], ok=False)
+                                _tool_actions += 1
+                                continue
+                        else:
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": f"[BLOCKED] Red-tier extension tool, no approval callback: {tool_name}",
+                            })
+                            _flight.step(tool_name, f"[BLOCKED] Red-tier extension tool: {tool_name}"[:160], ok=False)
+                            _tool_actions += 1
+                            continue
 
                     result = await execute_tool(
                         tool_name, tool_input,

@@ -24,6 +24,8 @@ import os
 from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from harness import extensions as ex
+from harness import ext_runtime
 
 log = logging.getLogger("galadriel.scheduler")
 
@@ -101,6 +103,8 @@ class Scheduler:
         self._last_goodnight: str | None = None
         # Reflection tracks each (date, slot) so all slots fire once per day
         self._fired_reflections: set[str] = set()
+        # Extension routine cron tasks
+        self._extension_tasks: list = []
 
         # Load persisted state
         self._load_state()
