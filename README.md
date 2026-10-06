@@ -108,6 +108,8 @@ An agent that runs for weeks has problems a chat window never sees. These module
 | **Compass navigator** (`harness/compass_navigator.py`) | Switches between headings (projects) **you** have created, using each heading's name plus optional keywords in its own file. It never invents a heading. | `GALADRIEL_COMPASS_AUTOSHIFT=0` turns it off. |
 | **Look** (`harness/look.py`) | A tool that opens a local image file so the model can see it. | None. |
 | **Quiet log** (`harness/log_quiet.py`) | Hides successful web requests (2xx/3xx) and duplicate HTTP-client lines from the log, so errors stand out. 4xx/5xx lines are always logged. | None. |
+| **Extensions** (`harness/extensions.py`, `harness/ext_runtime.py`) | A mind's own additions in `extensions/<name>/`: prompt text, scheduled routines, and approved code that adds tools (through the same safety gate, red tier asks first) and hooks with time limits. Nothing runs until approved; code approval is pinned to a hash of the files, so any change asks again. See [docs/EXTENSIONS.md](docs/EXTENSIONS.md). | `GET/POST /api/extensions…` on the Tower. |
+| **Instance identity** (`harness/body_identity.py`) | Each running copy of a mind knows its own name, OS and id, and the other copies it lives on, so a once-per-mind routine fires on exactly one of them. | `POST /api/body/name` to rename. |
 
 ## Threat model — read before judging
 
