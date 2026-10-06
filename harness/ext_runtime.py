@@ -140,6 +140,9 @@ class Runtime:
     @classmethod
     def load(cls, data_root, body=None, daily_log=None, hook_timeouts=None,
              tool_timeout=120.0):
+        if body is None:
+            from harness import body_identity
+            body = body_identity.body_info(data_root)
         r = cls(data_root, body=body, daily_log=daily_log,
                 hook_timeouts=hook_timeouts, tool_timeout=tool_timeout)
         r._load_all()
