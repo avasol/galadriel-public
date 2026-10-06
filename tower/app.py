@@ -546,4 +546,78 @@ def create_tower(agent, scheduler=None) -> Flask:
         # The body must restart to pick up the new brain (env is read at boot).
         return jsonify({"status": "ok", "restart_required": True})
 
+    # ── Extensions & body identity ────────────────────────────────
+    from harness import extensions as _ext
+    from harness import ext_runtime as _rt
+    from harness import body_identity as _bi
+
+    root = Path(agent.memory.memory_dir).resolve().parent
+
+    @app.route("/api/extensions", methods=["GET"])
+    def api_extensions():
+        try:
+            return jsonify({
+                "extensions": _ext.discover(root),
+                "body": _bi.body_info(root),
+                "bodies": _bi.bodies(root),
+                "warning": "Code extensions run with the same power as the engine itself. Approve only code you trust.",
+            })
+        except Exception as e:
+            log.exception("extensions list failed")
+            return jsonify({"error": str(e)}), 500
+
+    def _fresh_extension(name):
+        for row in _ext.discover(root):
+            if row["name"] == name:
+                return row
+        return None
+
+    @app.route("/api/extensions/<name>/approve", methods=["POST"])
+    def api_extension_approve(name):
+        try:
+            _ext.approve(root, name)
+            _rt.reload(root)
+            return jsonify({"status": "ok", "extension": _fresh_extension(name)})
+        except _ext.ExtensionError as e:
+            return jsonify({"error": str(e)}), 404
+        except Exception as e:
+            log.exception("extension approve failed")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/extensions/<name>/disable", methods=["POST"])
+    def api_extension_disable(name):
+        try:
+            _ext.disable(root, name)
+            _rt.reload(root)
+            return jsonify({"status": "ok", "extension": _fresh_extension(name)})
+        except _ext.ExtensionError as e:
+            return jsonify({"error": str(e)}), 404
+        except Exception as e:
+            log.exception("extension disable failed")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/extensions/<name>/routines/<routine_id>/home", methods=["POST"])
+    def api_extension_routine_home(name, routine_id):
+        try:
+            _ext.set_home(root, name, routine_id)
+            return jsonify({"status": "ok"})
+        except _ext.ExtensionError as e:
+            return jsonify({"error": str(e)}), 404
+        except Exception as e:
+            log.exception("extension set_home failed")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/body/name", methods=["POST"])
+    def api_body_name():
+        data = request.json or {}
+        try:
+            info = _bi.rename(root, data.get("name"))
+            _bi.register(root)
+            return jsonify({"status": "ok", "body": info})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            log.exception("body rename failed")
+            return jsonify({"error": str(e)}), 500
+
     return app
