@@ -16,3 +16,6 @@ tzdata
 # LexRank algorithm with no third-party dependency, so it rides the one
 # platform-agnostic Mind bundle on every OS. No sumy, no nltk (nltk's compiled
 # `regex` cannot ship in a single-arch bundle).
+
+# Signed extension packages (harness/ext_signing.py): Ed25519, offline verification.
+cryptography>=42
