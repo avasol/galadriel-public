@@ -102,3 +102,49 @@ tier)`, `hook(event, fn)`, `secret(slot)` (declared keyring slots only), `daily_
 - Hooks: `on_boot`, `on_turn_end(summary)`, `on_goodnight`, `on_termination`. Each runs with a
   time limit (2 s for `on_turn_end` and `on_termination`, 10 s otherwise); three timeouts in a row
   disable the extension, with the reason shown.
+
+## Packages (.aedext) and signing
+
+An `.aedext` is a zip: `AEDEXT.json` at the top and the extension's files under
+`payload/`. `AEDEXT.json` records `format` (1), `name`, `version`, `kind`, the
+`sha256` of the payload, the file count and a `signatures` list. Export leaves
+out `data/`, `local/`, caches and this body's `trust.json`; those are state, not
+content.
+
+The hash is a single sha256 fed `relpath\0filehash\n` lines, sorted by posix
+path string, over every file except a TOP-LEVEL `data/` or `local/` (plus
+`__pycache__` and `*.pyc`). A nested `data/` is content and is pinned.
+
+Import is hostile-input code. It refuses: a package over 10 MB, more than 500
+files, or one that unpacks to over 20 MB; a missing or unreadable `AEDEXT.json`;
+an unknown format; a bad name; a path that is absolute, contains `\` or `:`, or
+escapes `payload/`; a component that is unsafe on Windows or macOS (trailing dot
+or space, a device name such as `con`/`NUL`/`com1`, characters outside
+`[A-Za-z0-9._-]`); a case-only duplicate path; a symlink; shipped `data/`,
+`local/` or caches; a manifest that does not match the package; and any package
+whose files do not hash to the declared `sha256`. A failed import leaves no
+trace, and a failed replace keeps the old extension and its `data/` intact.
+
+An import ALWAYS arrives awaiting approval on this body, even when it replaces
+an approved one.
+
+Authors sign with Ed25519 over `DOMAIN_AUTHOR + canonical_meta(meta)`, where
+`canonical_meta` is the sorted, compact JSON of everything except `signatures`.
+The catalogue (Aedelgard) countersigns `DOMAIN_REVIEW + canonical_meta(meta) +
+b"\n" + author_pub` under a distinct domain, so a review can never be lifted
+onto another author's package. `CATALOGUE_KEYS` ships empty, so nothing is
+"reviewed" until a catalogue key is minted. A signature that is present but does
+not verify is tampering and refuses the import; a review by an unknown key is
+shown as not reviewed, with a note.
+
+The first import of a name pins its author key in `extensions/authors.json` for
+this mind. A later package of the same name by a different author, or unsigned
+while an author is pinned, is a DIFFERENT AUTHOR: refused unless the user
+explicitly accepts it (`new_author`). The pin survives deleting the folder.
+
+This instance's own author key lives at `extensions/author_key.json` (0600,
+created on first signed export, never exported). The Tower exposes
+`GET /api/extensions/<name>/export` (add `?sign=1` to sign),
+`GET /api/extensions/author` (the public fingerprint only) and
+`POST /api/extensions/import` (raw `application/octet-stream` body; `?replace=1`
+and `?new_author=1`). The CLI is `python -m harness.ext_signing keygen|sign|verify`.

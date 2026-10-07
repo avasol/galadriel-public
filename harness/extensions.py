@@ -1,15 +1,23 @@
 """EXTENSIONS — discovery, validation, hash-pinned approval, layers, routines, homes.
 
 See ``docs/EXTENSIONS.md``. This module only *describes* extensions; it never
-imports or runs extension code (that is harness/ext_runtime.py). Stdlib only.
+imports or runs extension code (that is harness/ext_runtime.py). Stdlib only,
+except that ``harness.ext_signing`` (which needs ``cryptography``) is imported
+lazily, and only for .aedext packages.
 """
 
 from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
+import os
 import re
+import shutil
+import stat
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +34,10 @@ __all__ = [
     "recipe_dirs",
     "enabled_code",
     "extension_hash",
+    "export_aedext",
+    "import_aedext",
+    "author_key_path",
+    "AEDEXT_MAX_BYTES",
 ]
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
@@ -34,6 +46,30 @@ ALL_PLATFORMS = ["windows", "macos", "linux"]
 HOOKS = {"on_boot", "on_turn_end", "on_goodnight", "on_termination"}
 PERMISSIONS = {"palace_write"}
 KINDS = {"declarative", "code"}
+
+AEDEXT_FORMAT = 1
+AEDEXT_MAX_BYTES = 10 * 1024 * 1024       # the packed .aedext
+AEDEXT_MAX_UNPACKED = 20 * 1024 * 1024    # sum of file sizes inside
+AEDEXT_MAX_FILES = 500
+
+_SAFE_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_WIN_DEVICES = ({"con", "prn", "aux", "nul"}
+                | {f"com{i}" for i in range(1, 10)}
+                | {f"lpt{i}" for i in range(1, 10)})
+
+
+def _unsafe_part(part):
+    """True if one path component is unsafe on any of the three OSes."""
+    if not _SAFE_PART_RE.match(part) or part in (".", ".."):
+        return True
+    if part.endswith(".") or part.endswith(" "):
+        return True
+    if part.split(".")[0].lower() in _WIN_DEVICES:
+        return True
+    return False
+
+
+_AUTHORS = "authors.json"
 
 
 class ExtensionError(Exception):
@@ -62,23 +98,32 @@ def _resolve_body(data_root, body):
 
 
 def extension_hash(ext_dir) -> str:
-    """sha256 over sorted 'relpath\\0filesha\\n' lines, excluding data/, local/,
-    __pycache__/ and *.pyc."""
-    root = Path(ext_dir)
-    lines = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
+    """Hex SHA-256 over the sorted (relative posix path, file hash) pairs.
+
+    Every file under ``ext_dir`` counts except anything under a TOP-LEVEL
+    ``data/`` or ``local/`` (plus ``__pycache__`` and ``*.pyc``). Each pair is
+    fed as a ``path\\0filehash\\n`` line into one sha256.
+    """
+    ext_dir = Path(ext_dir)
+    entries = []
+    for p in ext_dir.rglob("*"):
+        if not p.is_file():
             continue
-        rel = path.relative_to(root).as_posix()
-        parts = rel.split("/")
-        if "data" in parts or "local" in parts or "__pycache__" in parts:
+        rel = p.relative_to(ext_dir)
+        if rel.parts and rel.parts[0] in ("data", "local"):
             continue
-        if rel.endswith(".pyc"):
+        if "__pycache__" in rel.parts or rel.suffix == ".pyc":
             continue
-        sha = hashlib.sha256(path.read_bytes()).hexdigest()
-        lines.append(f"{rel}\0{sha}\n")
-    digest = hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
-    return digest
+        entries.append((rel.as_posix(), p))
+    entries.sort(key=lambda t: t[0])
+    h = hashlib.sha256()
+    for rel, p in entries:
+        try:
+            file_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+        except OSError:
+            continue
+        h.update(f"{rel}\0{file_hash}\n".encode("utf-8"))
+    return h.hexdigest()
 
 
 def _validate(ext_dir: Path, manifest: dict) -> str:
@@ -210,21 +255,302 @@ def _write_json(path: Path, data) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _write_trust(data_root, trust: dict) -> None:
+    """Write trust.json atomically (temp file + os.replace)."""
+    d = extensions_dir(data_root)
+    d.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".trust-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(trust, fh, indent=2, sort_keys=True)
+        os.replace(tmp, d / "trust.json")
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _read_authors(data_root) -> dict:
+    """Read authors.json; a missing or unreadable file means no pins."""
+    path = extensions_dir(data_root) / _AUTHORS
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_authors(data_root, authors: dict) -> None:
+    """Write authors.json atomically (temp file + os.replace)."""
+    d = extensions_dir(data_root)
+    d.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".authors-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(authors, fh, indent=2, sort_keys=True)
+        os.replace(tmp, d / _AUTHORS)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def author_key_path(data_root) -> Path:
+    """The path of this mind's author key file."""
+    return extensions_dir(data_root) / "author_key.json"
+
+
+def _provenance(name, ext_hash, authors) -> dict:
+    """The provenance record the Lodge shows for an extension."""
+    pin = authors.get(name)
+    if not isinstance(pin, dict):
+        return {"imported": False, "signed": False, "author": None,
+                "reviewed": False, "edited": False}
+    key = pin.get("key")
+    return {
+        "imported": True,
+        "signed": bool(key),
+        "author": (pin.get("fingerprint") if key else None),
+        "reviewed": bool(pin.get("reviewed")),
+        "edited": bool(ext_hash) and ext_hash != pin.get("sha256"),
+    }
+
+
+def _aedext_files(ext_dir):
+    """(relposix, Path) for every file that counts toward the extension hash."""
+    ext_dir = Path(ext_dir)
+    entries = []
+    for p in ext_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(ext_dir)
+        if rel.parts and rel.parts[0] in ("data", "local"):
+            continue
+        if "__pycache__" in rel.parts or rel.suffix == ".pyc":
+            continue
+        entries.append((rel.as_posix(), p))
+    entries.sort(key=lambda t: t[0])
+    return entries
+
+
+def export_aedext(data_root, name, sign=False) -> bytes:
+    """Pack an extension into an .aedext (zip) and return the bytes."""
+    d = _find_ext(data_root, name)
+    try:
+        manifest = json.loads((d / "extension.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise ExtensionError(f"extension {name!r} has no readable manifest")
+    if not isinstance(manifest, dict):
+        raise ExtensionError(f"extension {name!r} has no readable manifest")
+    files = _aedext_files(d)
+    meta = {
+        "format": AEDEXT_FORMAT,
+        "name": manifest.get("name"),
+        "version": manifest.get("version"),
+        "kind": manifest.get("kind"),
+        "sha256": extension_hash(d),
+        "files": len(files),
+        "signatures": [],
+    }
+    if sign:
+        from harness import ext_signing
+        meta["signatures"] = [
+            ext_signing.sign_author(
+                meta, ext_signing.author_key(author_key_path(data_root)))
+        ]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("AEDEXT.json", json.dumps(meta, indent=2, sort_keys=True))
+        for rel, p in files:
+            z.writestr(f"payload/{rel}", p.read_bytes())
+    return buf.getvalue()
+
+
+def import_aedext(data_root, blob, replace=False, new_author=False) -> dict:
+    """Import an .aedext. Hostile input: every refusal raises ExtensionError."""
+    if len(blob) > AEDEXT_MAX_BYTES:
+        raise ExtensionError(
+            f"package is larger than {AEDEXT_MAX_BYTES // (1024 * 1024)} MB")
+    try:
+        z = zipfile.ZipFile(io.BytesIO(blob))
+    except zipfile.BadZipFile:
+        raise ExtensionError("not an .aedext package")
+
+    with z:
+        infos = [i for i in z.infolist() if not i.is_dir()]
+        if len(infos) > AEDEXT_MAX_FILES + 1:
+            raise ExtensionError("package has too many files")
+        if sum(i.file_size for i in infos) > AEDEXT_MAX_UNPACKED:
+            raise ExtensionError("package unpacks to too much data")
+
+        meta_info = None
+        for i in infos:
+            if i.filename == "AEDEXT.json":
+                meta_info = i
+                break
+        if meta_info is None:
+            raise ExtensionError("package has no AEDEXT.json")
+        try:
+            meta = json.loads(z.read(meta_info))
+        except (ValueError, OSError):
+            raise ExtensionError("package has no readable AEDEXT.json")
+        if not isinstance(meta, dict):
+            raise ExtensionError("package has no readable AEDEXT.json")
+        if meta.get("format") != AEDEXT_FORMAT:
+            raise ExtensionError("unknown package format")
+        name = meta.get("name")
+        if not isinstance(name, str) or not NAME_RE.match(name):
+            raise ExtensionError("package has a bad extension name")
+        if not isinstance(meta.get("sha256"), str):
+            raise ExtensionError("package declares no hash")
+
+        from harness import ext_signing
+        try:
+            sig_status = ext_signing.verify(meta)
+        except ext_signing.SigningError as exc:
+            raise ExtensionError(f"signature check failed: {exc}")
+        authors = _read_authors(data_root)
+        pin = authors.get(name) if isinstance(authors.get(name), dict) else None
+        pinned_key = pin.get("key") if pin else None
+        if pinned_key and sig_status["author"] != pinned_key and not new_author:
+            new_fp = sig_status["fingerprint"] or "unsigned"
+            old_fp = pin.get("fingerprint") or "?"
+            raise ExtensionError(
+                f"this package is by a different author ({new_fp}) than the one this mind knows for {name!r} ({old_fp}); "
+                "it is not an update. Accept the new author explicitly to install it.")
+
+        payload = []
+        seen = set()
+        seen_fold = set()
+        for i in infos:
+            if i is meta_info:
+                continue
+            n = i.filename
+            if "\\" in n or n.startswith("/") or not n.startswith("payload/"):
+                raise ExtensionError("package contains an unsafe path")
+            if ":" in n:
+                raise ExtensionError("package contains an unsafe path")
+            parts = n.split("/")
+            if any(part in ("", ".", "..") for part in parts):
+                raise ExtensionError("package contains an unsafe path")
+            rel = n[len("payload/"):]
+            rparts = rel.split("/")
+            if any(_unsafe_part(p) for p in rparts):
+                raise ExtensionError("package contains an unsafe path")
+            if rparts[0].lower().rstrip(". ") in ("data", "local"):
+                raise ExtensionError("package ships state")
+            if (any(p.lower() == "__pycache__" for p in rparts)
+                    or rel.lower().endswith(".pyc")):
+                raise ExtensionError("package ships caches")
+            if stat.S_ISLNK(i.external_attr >> 16):
+                raise ExtensionError("package contains a symlink")
+            if rel.lower() in seen_fold:
+                raise ExtensionError("package contains a duplicate path")
+            seen_fold.add(rel.lower())
+            seen.add(rel)
+            payload.append((rel, i))
+
+        if "extension.json" not in seen:
+            raise ExtensionError("package has no extension.json")
+
+        edir = extensions_dir(data_root)
+        edir.mkdir(parents=True, exist_ok=True)
+        target = edir / name
+        if target.exists() and not replace:
+            raise ExtensionError(f"an extension named {name!r} is already installed")
+
+        tmp = Path(tempfile.mkdtemp(dir=str(edir), prefix=".import-"))
+        try:
+            for rel, info in payload:
+                dest = tmp.joinpath(*rel.split("/"))
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if tmp.resolve() not in dest.resolve().parents:
+                    raise ExtensionError("package contains an unsafe path")
+                dest.write_bytes(z.read(info))
+            try:
+                manifest = json.loads(
+                    (tmp / "extension.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                raise ExtensionError("package has no readable extension.json")
+            if not isinstance(manifest, dict):
+                raise ExtensionError("package has no readable extension.json")
+            if (manifest.get("name") != name
+                    or manifest.get("version") != meta.get("version")):
+                raise ExtensionError("manifest does not match the package")
+            if extension_hash(tmp) != meta["sha256"]:
+                raise ExtensionError(
+                    "the files do not match the hash the package declares; "
+                    "it was altered")
+            if target.exists():
+                old = edir / f".old-{name}-{os.getpid()}"
+                os.replace(target, old)
+                moved = []
+                try:
+                    for keep in ("data", "local"):
+                        if (old / keep).is_dir():
+                            shutil.move(str(old / keep), str(tmp / keep))
+                            moved.append(keep)
+                    os.replace(tmp, target)
+                except BaseException:
+                    for keep in moved:
+                        if (tmp / keep).exists() and not (old / keep).exists():
+                            shutil.move(str(tmp / keep), str(old / keep))
+                    if not target.exists():
+                        os.replace(old, target)
+                    raise
+                shutil.rmtree(old, ignore_errors=True)
+            else:
+                os.replace(tmp, target)
+        except BaseException as exc:
+            shutil.rmtree(tmp, ignore_errors=True)
+            if isinstance(exc, ExtensionError):
+                raise
+            raise ExtensionError(f"import failed: {exc}")
+
+    trust = _read_trust(data_root)
+    if name in trust:
+        del trust[name]
+        _write_trust(data_root, trust)
+
+    if sig_status["author"] or not pinned_key or new_author:
+        authors[name] = {"key": sig_status["author"],
+                         "fingerprint": sig_status["fingerprint"],
+                         "reviewed": sig_status["reviewed"],
+                         "review_key_id": sig_status["review_key_id"],
+                         "sha256": meta["sha256"],
+                         "version": meta.get("version")}
+        _write_authors(data_root, authors)
+
+    for rec in discover(data_root):
+        if rec.get("name") == name:
+            return rec
+    return {"name": name}
+
+
 def discover(data_root, body=None) -> list:
     """List every extension as a JSON-safe dict, sorted by folder name."""
     body = _resolve_body(data_root, body)
     root = extensions_dir(data_root)
     trust = _read_trust(data_root)
     placement = _read_placement(data_root)
+    authors = _read_authors(data_root)
     out = []
     if not root.is_dir():
         return out
     for folder in sorted(p for p in root.iterdir() if p.is_dir()):
+        if folder.name.startswith("."):
+            continue
         if folder.name in ("trust.json", "placement.json"):
             continue
         if not (folder / "extension.json").is_file():
             continue
-        out.append(_describe(folder, body, trust, placement))
+        row = _describe(folder, body, trust, placement)
+        row["provenance"] = _provenance(row["name"], row.get("hash") or "", authors)
+        out.append(row)
     return out
 
 

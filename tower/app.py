@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from concurrent.futures import TimeoutError as FuturesTimeout
 from harness.response_status import present, status_of, Reply
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 from urllib.parse import urlsplit
 
 log = logging.getLogger("galadriel.tower")
@@ -651,6 +651,55 @@ def create_tower(agent, scheduler=None) -> Flask:
         except Exception as e:
             log.exception("extension disable failed")
             return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/extensions/<name>/export", methods=["GET"])
+    def api_extension_export(name):
+        from harness import ext_signing as _sig
+        sign = request.args.get("sign") in ("1", "true", "yes")
+        try:
+            blob = _ext.export_aedext(_ext_root(), name, sign=sign)
+        except _ext.ExtensionError as e:
+            return jsonify({"error": str(e)}), 404
+        except _sig.SigningError as e:
+            return jsonify({"error": str(e)}), 500
+        version = (_fresh_extension(name) or {}).get("version") or ""
+        fname = f"{name}-{version}.aedext" if version else f"{name}.aedext"
+        return Response(blob, mimetype="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+    @app.route("/api/extensions/author", methods=["GET"])
+    def api_extension_author():
+        """This instance's author identity: the PUBLIC fingerprint only, never the key."""
+        from harness import ext_signing as _sig
+        p = _ext.author_key_path(_ext_root())
+        if not p.is_file():
+            return jsonify({"fingerprint": None})
+        try:
+            k = _sig.load_key(p)
+        except _sig.SigningError as e:
+            return jsonify({"fingerprint": None, "error": str(e)})
+        return jsonify({"fingerprint": _sig.fingerprint(k["public"])})
+
+    @app.route("/api/extensions/import", methods=["POST"])
+    def api_extension_import():
+        """Import an .aedext. Raw body, application/octet-stream only: a plain cross-site
+        <form> cannot send that type without a CORS preflight, which the Tower never grants.
+        Arrives awaiting approval."""
+        ctype = (request.content_type or "").split(";")[0].strip().lower()
+        if ctype != "application/octet-stream":
+            return jsonify({"error": "send the .aedext as application/octet-stream"}), 415
+        if (request.content_length or 0) > _ext.AEDEXT_MAX_BYTES:
+            return jsonify({"error": "package too large"}), 413
+        blob = request.get_data(cache=False)
+        if len(blob) > _ext.AEDEXT_MAX_BYTES:
+            return jsonify({"error": "package too large"}), 413
+        replace = request.args.get("replace") in ("1", "true", "yes")
+        new_author = request.args.get("new_author") in ("1", "true", "yes")
+        try:
+            rec = _ext.import_aedext(_ext_root(), blob, replace=replace, new_author=new_author)
+        except _ext.ExtensionError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"status": "ok", "extension": rec})
 
     @app.route("/api/extensions/<name>/routines/<routine_id>/home", methods=["POST"])
     def api_extension_routine_home(name, routine_id):
