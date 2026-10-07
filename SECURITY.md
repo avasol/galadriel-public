@@ -66,6 +66,13 @@ and repeat it here because it is the truth your threat model should assume:
   under full server compromise or live operator memory dumps, the broker holds only
   opaque ciphertext.
 
+- **The Tower (local web UI)** has no login; it trusts that only the owner's own
+  browser and tools reach it. Two gates hold that line against web pages the
+  owner happens to visit: the **host gate** answers only to the names the Tower
+  is served under (loopback, `TOWER_HOST`, `TOWER_ALLOWED_HOSTS`), which stops DNS
+  rebinding, and the **origin gate** refuses any state-changing request a browser
+  marks as coming from another site. A bypass of either is in scope.
+
 > **Architectural transition note (updated 8 September 2026):**
 > Earlier development phases evaluated a hosted broker-inference mode where the
 > broker accepted provider credentials and decrypted memory during request execution.
