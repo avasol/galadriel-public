@@ -9,8 +9,20 @@ from pathlib import Path
 from concurrent.futures import TimeoutError as FuturesTimeout
 from harness.response_status import present, status_of, Reply
 from flask import Flask, render_template, request, jsonify
+from urllib.parse import urlsplit
 
 log = logging.getLogger("galadriel.tower")
+
+
+def host_name(host_header: str) -> str:
+    """The bare, lower-cased host from a Host header: '[::1]:8080' -> '::1',
+    '127.0.0.1:8080' -> '127.0.0.1', 'localhost' -> 'localhost'."""
+    h = (host_header or "").strip().lower()
+    if h.startswith("["):
+        return h[1:].split("]", 1)[0]
+    if h.count(":") == 1:
+        return h.rsplit(":", 1)[0]
+    return h
 
 
 def create_tower(agent, scheduler=None) -> Flask:
@@ -21,6 +33,49 @@ def create_tower(agent, scheduler=None) -> Flask:
         static_folder=str(Path(__file__).parent / "static"),
     )
     app.secret_key = os.environ.get("TOWER_SECRET_KEY", "change-me")
+
+    # THE HOST GATE: the Tower has no login and trusts that only the owner's
+    # browser reaches it. A web page that rebinds its own hostname to
+    # 127.0.0.1 becomes same-origin and could POST JSON to /api/chat. Only
+    # names this Tower is served under are answered; anything else is 421.
+    # Extra names (a LAN name, a tunnel IP) go in TOWER_ALLOWED_HOSTS=a,b.
+    _allowed_hosts = {"127.0.0.1", "localhost", "::1"}
+    _th = os.environ.get("TOWER_HOST", "").strip().lower()
+    if _th and _th not in ("0.0.0.0", "::"):
+        _allowed_hosts.add(_th)
+    _allowed_hosts |= {h.strip().lower().strip("[]")
+                       for h in os.environ.get("TOWER_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    app.config["ALLOWED_HOSTS"] = _allowed_hosts
+
+    @app.before_request
+    def _host_gate():
+        name = host_name(request.host)
+        if name not in app.config["ALLOWED_HOSTS"]:
+            log.warning("host gate: refused Host %r on %s", name[:80], request.path)
+            return jsonify({"error": "Misdirected request: this Tower does not answer to that Host. Add it to TOWER_ALLOWED_HOSTS if it is yours."}), 421
+
+    # THE ORIGIN GATE: the host gate does not stop a plain cross-site <form>
+    # POST to 127.0.0.1 (Host is then legitimate). Browsers name the requesting
+    # site; a state-changing request a browser marks as cross-site is refused.
+    # No Origin and no Sec-Fetch-Site (CLI, knocks) passes; reads are not gated.
+    @app.before_request
+    def _origin_gate():
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        site = (request.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site in ("cross-site", "same-site"):
+            log.warning("origin gate: refused Sec-Fetch-Site %r on %s", site, request.path)
+            return jsonify({"error": "Refused: this request came from another website."}), 403
+        origin = request.headers.get("Origin")
+        if origin is not None:
+            try:
+                netloc = urlsplit(origin.strip()).netloc
+            except ValueError:
+                netloc = ""
+            if not netloc or host_name(netloc) not in app.config["ALLOWED_HOSTS"]:
+                log.warning("origin gate: refused Origin %r on %s", origin[:80], request.path)
+                return jsonify({"error": "Refused: this request came from another website."}), 403
+        return None
 
     @app.route("/healthz")
     def healthz():
