@@ -15,7 +15,7 @@
 - **Server:** EC2 t4g.medium in eu-north-1  ← update to your actual machine
 - **Working Dir:** /opt/galadriel
 - **Python Venv:** /home/ubuntu/.venv
-- **Model:** claude-opus-4-6 (override with AGENT_MODEL in .env)
+- **Brain:** set AGENT_PROVIDER and the model in .env (`/model` in Discord shows what your key can reach)
 - **Systemd Service:** galadriel.service — install via `sudo bash cmd/install.sh`
 
 ## Key Paths

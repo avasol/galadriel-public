@@ -74,10 +74,11 @@ The agent's brain is a provider adapter. Change one environment variable to swit
 AGENT_PROVIDER=anthropic        # Claude (default)
 AGENT_PROVIDER=gemini           # Google Gemini
 AGENT_PROVIDER=openai           # OpenAI
-AGENT_PROVIDER=bedrock          # AWS Bedrock (Nova)
+AGENT_PROVIDER=bedrock-nova     # AWS Bedrock (Nova)
 AGENT_PROVIDER=nebius           # Nebius Token Factory (DeepSeek, EU-hosted)
 AGENT_PROVIDER=xai              # xAI (Grok)
 AGENT_PROVIDER=mistral          # Mistral (EU-sovereign, Paris)
+AGENT_PROVIDER=local            # Ollama / LM Studio / vLLM, offline
 AGENT_MODEL=claude-sonnet-5     # model within the provider
 ```
 

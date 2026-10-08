@@ -4,11 +4,11 @@ This file is part of the stable cache block. Fill it in with your project detail
 what you're building, your architecture, your current state, your goals. The more
 context you put here, the less you need to re-explain every session.
 
-**Why this file matters for cost:** Galadriel uses Anthropic prompt caching. The stable
-block (SOUL.md + MEMORY.md + this file + any other *.md in config/) is cached at ~10%
-of normal input cost after the first call. For caching to engage on Claude Opus, the
-stable block must exceed 4096 tokens (~16KB of text). Keep this file reasonably detailed
-and you'll always clear that threshold. See CACHING.md for the full explanation.
+**Why this file matters for cost:** Galadriel uses each provider's prompt caching. The
+stable block (SOUL.md + MEMORY.md + this file + any other *.md in config/) is read at a
+fraction of normal input cost after the first call. Most providers only cache a prompt
+above a minimum size (on some Claude models, 4,096 tokens, about 16 KB of text), so keep
+this file reasonably detailed. See CACHING.md for the per-provider details.
 
 ---
 

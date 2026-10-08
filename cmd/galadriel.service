@@ -1,5 +1,5 @@
 [Unit]
-Description=Galadriel Agent Harness (Claude + Discord + Tower)
+Description=Galadriel agent harness (model-agnostic brain, Discord, Tower)
 Documentation=https://github.com/avasol/galadriel-public
 After=network-online.target
 Wants=network-online.target

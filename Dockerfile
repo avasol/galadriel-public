@@ -27,7 +27,7 @@ RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 FROM python:3.12-slim
 LABEL org.opencontainers.image.title="Galadriel" \
       org.opencontainers.image.source="https://github.com/avasol/galadriel-public" \
-      org.opencontainers.image.description="A persistent, self-hosted Claude agent with a verbatim memory palace."
+      org.opencontainers.image.description="The open engine behind Aedelgard: a persistent, self-hosted AI agent with a verbatim memory palace and a model-agnostic brain."
 
 # onnxruntime (transitive dep of mempalace) needs libgomp at runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
