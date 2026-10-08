@@ -36,5 +36,6 @@ def test_malformed_usage_is_zero():
 
 
 def test_default_model_is_current():
-    src = (ROOT / "harness" / "agent.py").read_text(encoding="utf-8")
-    assert 'os.environ.get("AGENT_MODEL", "claude-sonnet-5")' in src
+    from types import SimpleNamespace
+    from harness.agent import _initial_model
+    assert _initial_model(None, None, SimpleNamespace(name="anthropic")) == "claude-sonnet-5"
