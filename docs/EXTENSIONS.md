@@ -103,6 +103,14 @@ tier)`, `hook(event, fn)`, `secret(slot)` (declared keyring slots only), `daily_
   time limit (2 s for `on_turn_end` and `on_termination`, 10 s otherwise); three timeouts in a row
   disable the extension, with the reason shown.
 
+## What approval does and does not do
+
+Approval pins the exact files: change one byte and the extension asks again. That is
+**integrity, not isolation.** An approved code extension runs inside the agent's own process,
+with the agent's own rights: it can read what the agent can read. Approve code only from
+people you trust. A review countersignature means a person at Aedelgard read the package; in
+this frozen engine no catalogue keys are configured, so no package shows as reviewed here.
+
 ## Packages (.aedext) and signing
 
 An `.aedext` is a zip: `AEDEXT.json` at the top and the extension's files under

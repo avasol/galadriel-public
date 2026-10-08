@@ -3,6 +3,13 @@
 Aedelgard is a memory you own. Its whole value rests on trust, so we treat
 security reports as first-class work, not a compliance afterthought.
 
+## This engine is frozen
+
+`galadriel-public` was frozen on 2026-10-08 (tag `reference-2026-10-08`). Reports about it are
+still welcome and will be read, and a serious one will be answered with an advisory, but fixes
+to this frozen code are not promised. Reports about the Aedelgard body, the cloud broker or the
+site are handled with the targets below.
+
 ## Reporting a vulnerability
 
 Please report privately, before public disclosure:
@@ -29,8 +36,9 @@ anonymous), and we will not pursue good-faith researchers who follow this policy
 
 In scope:
 
-- **The open engine** (`avasol/galadriel-public`) — the memory palace, temporal
-  knowledge graph, agent loop, and desktop **body**.
+- **The open engine** (`avasol/galadriel-public`, frozen) — the memory palace, temporal
+  knowledge graph and agent loop.
+- **The desktop body** (Aedelgard) — the signed app, its keyring, extensions and catalogue.
 - **The cloud broker** (`hq.aedelgard.com`) — tenant isolation, the user-key
   vault, device-token auth, and the palace sync endpoints.
 - **The site** (`aedelgard.com`) — auth flows, key handling, checkout.

@@ -1,5 +1,12 @@
 # Galadriel
 
+> **🧊 Frozen reference engine — 2026-10-08, tag `reference-2026-10-08`.**
+> This repository is complete as it stands and receives no new features. It is the point from
+> which the Aedelgard body branched; the body has since moved on privately and is **not** the
+> same code. What stays open and current is the **[Aedelgard Mind Format](https://github.com/avasol/aedelgard-mind-format)**:
+> what a mind is on disk, how it travels, how it is sealed, how extensions are signed. Fork
+> freely (MIT). See [Status after the freeze](#status-after-the-freeze).
+
 **The open engine behind [Aedelgard](https://aedelgard.com) — a persistent AI agent with sovereign memory, a model-agnostic brain, and the ability to improve its own code.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -12,15 +19,15 @@
 
 ## What this is
 
-A persistent AI agent harness that runs on your own machine. It connects to any LLM provider (Claude, Gemini, OpenAI, Bedrock, Nebius/DeepSeek, xAI/Grok, Mistral, Berget), maintains a local verbatim memory palace with zero-token retrieval, and can edit its own code to improve how it works.
+A persistent AI agent harness that runs on your own machine. It connects to any LLM provider (Claude, Gemini, OpenAI, Bedrock, Nebius/DeepSeek, xAI/Grok, Mistral, Berget), maintains a local verbatim memory palace that recalls without calling any model, and can edit its own code to improve how it works.
 
-This is **not** a product. It is the open engine that [Aedelgard](https://aedelgard.com) packages into a one-click desktop app. Everything here is real, inspectable, and yours to build.
+This is **not** a product. It is the open engine that [Aedelgard](https://aedelgard.com) grew from. Everything here is real, inspectable, and yours to build on.
 
 ## What's in the box
 
 | Component | What it does |
 |---|---|
-| **🏛️ Memory Palace** | Verbatim semantic search + temporal knowledge graph. Local ChromaDB + SQLite. Zero API cost to recall anything. |
+| **🏛️ Memory Palace** | Verbatim semantic search + temporal knowledge graph. Local ChromaDB + SQLite. Recall makes no model calls (search runs on a local embedding model). |
 | **🧠 Provider Seam** | One agent, many brains. Swap Claude → Gemini → DeepSeek → local model mid-conversation without losing the mind. |
 | **🔧 Self-Modification** | The agent can edit its own harness, restart itself, and resume — with a one-shot wake that survives the restart. |
 | **💭 Ambient Reflection** | A silent background loop that curates memory, notices patterns, and files what a purely reactive agent would forget. |
@@ -87,7 +94,7 @@ All 18 provider parity tests are in `tests/test_provider_parity.py`. The memory 
 
 ## Memory architecture
 
-Three layers, all local, all zero-token retrieval:
+Three layers, all local; recalling from them calls no model:
 
 | Layer | Substrate | What it stores |
 |---|---|---|
@@ -95,7 +102,7 @@ Three layers, all local, all zero-token retrieval:
 | **Temporal Knowledge Graph** | SQLite | Structured facts with validity windows (`valid_from` → `valid_to`) |
 | **Identity & Cognition** | Markdown + SQLite Diary | Values, constraints, session diary, ambient reflections |
 
-Built on [MemPalace](https://github.com/MemPalace/mempalace), an independent local-first memory library. The harness adds 13 palace tools (18 tools in total) wired into the agent's lifecycle. Search by meaning. Zero API spend on retrieval.
+Built on [MemPalace](https://github.com/MemPalace/mempalace), an independent local-first memory library. The harness adds 13 palace tools (18 tools in total) wired into the agent's lifecycle. Search by meaning, with a local embedding model. No model calls, no API spend on recall.
 
 ## Living for a long time
 
@@ -120,19 +127,51 @@ This is a **founder's harness**. It is designed for one person on their own hard
 
 - `run_shell` is deliberately unrestricted — the operator IS the user.
 - The Tower UI binds to localhost without authentication.
-- Self-modification is a feature: the agent writes, commits, and pushes without a pre-commit gate. The operator reviews afterward via `git log`.
+- Self-modification is a feature: the agent writes and commits its own code without a pre-commit gate; the operator reviews afterward via `git log`. **Pushing to any remote asks first** (red tier).
+- Extension approval pins the exact files (integrity), but it is **not a sandbox**: an approved code extension runs with the agent's own rights.
+- The Tower checks the `Host` and `Origin` of every request, so other web pages and DNS-rebinding tricks cannot drive it.
 
-**The Aedelgard product carries a tighter posture.** The packaged body gates first-run behind consent, background reflection may *propose but never act*, and the hosted service never gets these tools. Judge the product by [aedelgard.com/architecture](https://aedelgard.com/architecture) and [aedelgard.com/security](https://aedelgard.com/security). This repo shows the engine's honesty, not the product's perimeter.
+**The Aedelgard body carries a tighter posture.** It gates first-run behind consent, background reflection may *propose but never act*, and the hosted service never gets these tools. Judge the product by [aedelgard.com/architecture](https://aedelgard.com/architecture) and [aedelgard.com/security](https://aedelgard.com/security). This repo shows the engine's honesty, not the product's perimeter.
 
-## Aedelgard — the packaged body
+## Aedelgard — what grew from this
 
-Prefer a one-click install? [Aedelgard](https://aedelgard.com) packages this same engine into a signed desktop app with a tighter safety posture:
+[Aedelgard](https://aedelgard.com) is a signed desktop app that began as this engine and has
+diverged from it: a keyring for third-party keys, a reviewed extension catalogue, messaging
+channels, a desk widget, one-click install, encrypted backup and sync between your own machines.
 
-- [Download](https://aedelgard.com/download) — Windows, Linux (macOS following)
+- [Download](https://aedelgard.com/download) — Windows, Linux
 - [Architecture](https://aedelgard.com/architecture) — trust matrix and honest status
-- [How it works](https://aedelgard.com/how-it-works) — the two-tier model, plainly
+- [The Mind Format](https://github.com/avasol/aedelgard-mind-format) — the open definition both share
 
-Same memory. Same provider seam. Same thesis. Built for you instead of by you.
+Same thesis, same memory format. Not the same code.
+
+## Status after the freeze
+
+- **Tests:** the full suite runs on every push ([CI](.github/workflows/tests.yml)) against
+  [`requirements.lock`](requirements.lock), the exact versions it passed with on the freeze date.
+  `requirements.txt` keeps the looser ranges.
+- **Models will age.** Provider adapters talk to APIs that keep changing. This table is what was
+  checked live on 2026-10-08 (a short request that had to call a tool):
+
+  | Provider | Model checked | Result |
+  |---|---|---|
+  | Anthropic | `claude-sonnet-5` | ✅ tool call |
+  | OpenAI | `gpt-5.5`; default `gpt-4o-mini` | ✅ tool call |
+  | Google Gemini | default `gemini-flash-latest`; `gemini-3.1-pro-preview` | ✅ tool call (default); 3.1 Pro called the tool in one of two runs |
+  | Nebius | default `deepseek-ai/DeepSeek-V4-Pro` | ✅ tool call |
+  | Berget | default `google/gemma-4-31B-it` | ✅ tool call |
+  | AWS Bedrock | default `eu.amazon.nova-micro-v1:0` | ✅ tool call |
+  | Mistral | `mistral-large-latest` | ⚠️ not verified (our account tier) |
+  | xAI | — | ⚠️ not verified (no key) |
+  | Local (Ollama etc.) | your model | the most durable path: nothing upstream changes under you |
+
+  If a model id stops working, set `<PROVIDER>_MODEL` in `.env`; no code change is needed.
+- **Issues and pull requests:** this repository is frozen, so new features are not merged.
+  Forks are welcome.
+- **Security:** see [SECURITY.md](SECURITY.md). Reports are read; fixes to this frozen code are
+  not promised.
+- **Cancelled here:** capability keys for extensions and a host for outside (MCP) tools. They
+  exist in the Aedelgard body, not in this engine.
 
 ## Project structure
 
@@ -143,7 +182,8 @@ galadriel-public/
 ├── config/            # Example configs (not the live config)
 ├── cmd/               # Install and ops scripts
 ├── tower/             # Tower web UI (Flask + SSE)
-├── edge_widget/       # Xeneon Edge Companion widget source
+├── discord_bot/       # Discord transport
+├── docs/              # Extensions, Edge, response status
 ├── assets/            # Promotional images
 ├── docker-compose.yml
 ├── Dockerfile
@@ -152,9 +192,9 @@ galadriel-public/
 
 ## Contributing
 
-Issues and PRs welcome. The [issues](https://github.com/avasol/galadriel-public/issues) track bugs, feature requests, and architectural discussions.
-
-Before opening a PR: run `pytest` — the provider parity suite and tool-repair tests must pass. Self-modification contributions should include a note on what guard or test prevents regression.
+This engine is frozen (see above), so pull requests for new features will not be merged. Fork it:
+it is MIT. To improve the shared format, open an issue on the
+[Mind Format](https://github.com/avasol/aedelgard-mind-format).
 
 ## Made by
 
