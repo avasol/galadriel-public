@@ -794,7 +794,7 @@ class GaladrielAgent:
             anthropic_client=None,
             api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),
         )
-        self.model = model or os.environ.get("AGENT_MODEL", "claude-opus-4-6")
+        self.model = model or os.environ.get("AGENT_MODEL", "claude-sonnet-5")
         self.max_tokens = max_tokens or int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
         self.memory = MemoryManager(config_dir=config_dir, memory_dir=memory_dir)
         self.working_dir = working_dir or os.getcwd()
