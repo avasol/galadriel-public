@@ -832,7 +832,7 @@ class NebiusProvider(OpenAIProvider):
         super().__init__(
             api_key=key,
             base_url=base_url or os.environ.get("NEBIUS_BASE_URL") or self._default_base,
-            model=model or os.environ.get("NEBIUS_MODEL") or "deepseek-ai/DeepSeek-V3",
+            model=model or os.environ.get("NEBIUS_MODEL") or "deepseek-ai/DeepSeek-V4-Pro",
         )
 
 
@@ -1246,7 +1246,7 @@ class GeminiProvider:
                 "GeminiProvider needs GEMINI_API_KEY (or GOOGLE_API_KEY). "
                 "Or set AGENT_PROVIDER=anthropic to use a Claude key."
             )
-        self.default_model = model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        self.default_model = model or os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
         # Gemini 2.5 models "think" by default, burning the output budget on
         # hidden reasoning. GEMINI_THINKING_BUDGET controls it: 0 disables it
         # (fast, cheap — the default here), -1 lets the model decide.
