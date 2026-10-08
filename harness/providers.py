@@ -697,7 +697,7 @@ class OpenAIProvider:
                                         json=body, headers=self._headers())
         if r.status_code == 401:
             # TERMINAL: the key is provably dead — not a rung to step past.
-            _hint = "NEBIUS_API_KEY" if self.name == "nebius" else "OPENAI_API_KEY"
+            _hint = _auth_key_var(self.name)
             raise ProviderAuthError(
                 self.name + ": the endpoint rejected the key (HTTP 401). "
                 f"Check {_hint}.")
@@ -763,7 +763,7 @@ class OpenAIProvider:
         compatible servers return whatever they host, unfiltered."""
         r = await self._client.get(self.base_url + "/models", headers=self._headers())
         if r.status_code == 401:
-            _hint = "NEBIUS_API_KEY" if self.name == "nebius" else "OPENAI_API_KEY"
+            _hint = _auth_key_var(self.name)
             raise ProviderAuthError(self.name + f": the endpoint rejected the key (HTTP 401). Check {_hint}.")
         r.raise_for_status()
         data = r.json().get("data", []) or []
@@ -995,6 +995,39 @@ class MistralProvider(OpenAIProvider):
             api_key=key,
             base_url=base_url or os.environ.get("MISTRAL_BASE_URL") or self._default_base,
             model=model or os.environ.get("MISTRAL_MODEL") or "mistral-large-latest",
+        )
+
+
+class BergetProvider(OpenAIProvider):
+    """Berget AI — api.berget.ai, OpenAI-compatible, EU-hosted in Sweden.
+    Reads BERGET_API_KEY; strips the catalogue's "berget:" prefix before the
+    API call. Self-contained __init__."""
+
+    name = "berget"
+    _default_base = "https://api.berget.ai/v1"
+    _VISION_MODEL_MARKERS = ("gemma-4", "kimi-k3", "glm-5", "qwen3.8")
+
+    def _model_supports_vision(self, model_id):
+        """Per-model vision gate: only the multimodal families see images."""
+        low = (model_id or "").lower()
+        if low.startswith("berget:"):
+            low = low[len("berget:"):]
+        return any(m in low for m in self._VISION_MODEL_MARKERS)
+
+    def _pick_model(self, requested: str | None) -> str:
+        picked = super()._pick_model(requested)
+        if picked and picked.lower().startswith("berget:"):
+            picked = picked[len("berget:"):]
+        return picked
+
+    def __init__(self, *, api_key=None, base_url=None, model=None):
+        key = api_key or os.environ.get("BERGET_API_KEY") or ""
+        if not key:
+            raise RuntimeError("BergetProvider needs BERGET_API_KEY. Set it in .env or your environment.")
+        super().__init__(
+            api_key=key,
+            base_url=base_url or os.environ.get("BERGET_BASE_URL") or self._default_base,
+            model=model or os.environ.get("BERGET_MODEL") or "google/gemma-4-31B-it",
         )
 
 
@@ -1579,6 +1612,7 @@ _REGISTRY = {
     "nebius": NebiusProvider,
     "xai": XAIProvider,
     "mistral": MistralProvider,
+    "berget": BergetProvider,
     "bedrock-nova": BedrockNovaProvider,
 }
 
@@ -1611,6 +1645,8 @@ _PROVIDER_REQUIREMENTS = {
                      "your own xAI key — direct to Grok; we are not on the wire."),
     "mistral":      (("MISTRAL_API_KEY",),
                      "your own Mistral key — European sovereign inference (Paris); we are not on the wire."),
+    "berget":       (("BERGET_API_KEY",),
+                     "your own Berget key — EU-hosted inference in Sweden; we are not on the wire."),
 }
 
 
@@ -1621,6 +1657,14 @@ def provider_requirements(provider_name: str | None = None) -> tuple[tuple, str]
     name = (provider_name or os.environ.get("AGENT_PROVIDER") or "anthropic").lower()
     return _PROVIDER_REQUIREMENTS.get(name, (("ANTHROPIC_API_KEY",),
         f"a credential for provider {name!r}."))
+
+
+def _auth_key_var(name: str) -> str:
+    """The env var a 401 should point the user at, for this provider."""
+    req = _PROVIDER_REQUIREMENTS.get(name)
+    if req and req[0]:
+        return req[0][0]
+    return "OPENAI_API_KEY"
 
 
 def _make_single(name: str, *, anthropic_client=None,
