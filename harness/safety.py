@@ -32,7 +32,7 @@ GREEN_PATTERNS = [
 ]
 
 YELLOW_PATTERNS = [
-    r"^git\s+(add|commit|push|pull|merge|checkout|switch)",
+    r"^git\s+(add|commit|pull|merge|checkout|switch)",
     r"^sam\s+deploy",
     r"^aws\s+s3\s+(cp|mv|sync)",
     r"^aws\s+dynamodb\s+(put-item|update-item|batch-write)",
@@ -51,7 +51,8 @@ RED_PATTERNS = [
     r"^aws\s+ec2\s+(terminate|stop|run|modify)",
     r"^aws\s+s3\s+rb\b",
     r"^aws\s+dynamodb\s+(create|delete)-table",
-    r"^git\s+(push\s+--force|reset\s+--hard)",
+    r"^git\s+push\b",
+    r"^git\s+reset\s+--hard",
     r"^shutdown\b",
     r"^reboot\b",
     r"curl.*\|\s*(bash|sh)",
