@@ -11,6 +11,7 @@ from discord.ext import commands
 from harness.agent import GaladrielAgent
 from harness.compaction import compact_conversation
 from harness.error_humanizer import humanize_anthropic_error
+from harness import cost_ledger
 
 log = logging.getLogger("galadriel.discord")
 
@@ -33,39 +34,16 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — Claude's per-image limit
 
 
 # ─── Status report — pricing + formatter ────────────────────────────
-#
-# Prices in USD per million tokens, current Anthropic public pricing.
-# Keep keys matched to the AGENT_MODEL values actually in use.
-MODEL_PRICING_USD_PER_MTOK = {
-    # Opus family
-    "claude-opus-4-7": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
-    "claude-opus-4-6": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
-    "claude-opus-4-5": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
-    # Sonnet family
-    "claude-sonnet-4-6": {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
-    "claude-sonnet-4-5": {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
-    "claude-sonnet-4":   {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
-    # Haiku family
-    "claude-haiku-4-5":  {"input": 0.80, "cache_read": 0.08, "cache_write": 1.00, "output": 4.00},
-}
 
 
 def _price_call(usage: dict, model: str) -> tuple[float, float, float]:
     """Return (actual_cost_usd, hypothetical_no_cache_cost_usd, savings_pct)
     for a single API call's usage dict {input, cache_read, cache_write, output}.
 
-    Falls back to Sonnet pricing if the model is unknown — still gives a
-    usable estimate rather than failing. Returns (0, 0, 0) on malformed usage.
+    Prices come from harness.cost_ledger — one table for the whole engine.
+    Returns (0, 0, 0) on malformed usage.
     """
-    prices = MODEL_PRICING_USD_PER_MTOK.get(model)
-    if prices is None:
-        # Try prefix matches (e.g. claude-sonnet-4-6-20250929)
-        for k, v in MODEL_PRICING_USD_PER_MTOK.items():
-            if model.startswith(k):
-                prices = v
-                break
-    if prices is None:
-        prices = MODEL_PRICING_USD_PER_MTOK["claude-sonnet-4-6"]
+    prices = cost_ledger._rates(model or "")
 
     try:
         inp = usage.get("input", 0) or 0
