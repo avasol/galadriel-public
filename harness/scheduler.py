@@ -775,7 +775,7 @@ class Scheduler:
 
     def add_sink(self, fn) -> None:
         """Register an extra delivery sink: fn(message: str, title: str)."""
-        self._sinks.append(fn)
+        self.__dict__.setdefault('_sinks', []).append(fn)
 
     async def _send_to_discord(self, message: str, channel_id: str | None = None):
         """Send a message to the authorized user via DM (or configured channel).
@@ -790,7 +790,7 @@ class Scheduler:
         """
         from .response_status import present, Reply
         from . import events as _events
-        for sink in self._sinks:
+        for sink in getattr(self, '_sinks', ()):
             try:
                 shown = present(message) if isinstance(message, Reply) else message
                 sink(shown, _events.title(channel_id))
