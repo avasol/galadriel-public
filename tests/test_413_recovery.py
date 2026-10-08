@@ -23,6 +23,7 @@ def test_agent_recovers_from_413_by_trimming():
         agent.max_tokens = 1000
         agent.tools = []
         agent.thinking_budget = 0
+        agent.show_thinking = "off"  # set in __init__, which __new__ skips
         agent.context_warning_callback = None
         agent.context_window = 200000
         agent.history_token_budget = 150000
