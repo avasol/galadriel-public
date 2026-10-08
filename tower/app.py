@@ -62,6 +62,10 @@ def create_tower(agent, scheduler=None) -> Flask:
     def _origin_gate():
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return None
+        if (request.path.startswith("/api/edge/")
+                and getattr(app, "edge", None) is not None
+                and app.edge.token_valid(request.headers.get("X-Edge-Token", ""))):
+            return None
         site = (request.headers.get("Sec-Fetch-Site") or "").strip().lower()
         if site in ("cross-site", "same-site"):
             log.warning("origin gate: refused Sec-Fetch-Site %r on %s", site, request.path)
@@ -774,5 +778,12 @@ def create_tower(agent, scheduler=None) -> Flask:
         except Exception as e:
             log.exception("body rename failed")
             return jsonify({"error": str(e)}), 500
+
+    # ── Edge (desk widget) ────────────────────────────────────────
+    try:
+        from tower.edge import register_edge
+        register_edge(app, agent, scheduler)
+    except Exception:
+        log.exception("Edge registration failed; the Tower boots without it")
 
     return app

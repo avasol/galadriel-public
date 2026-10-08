@@ -206,3 +206,36 @@ def write_trace(directory, lines, day) -> int:
     with path.open("a", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
     return len(lines)
+
+
+# ── the token file (this engine has no keyring) ──────────────────────
+
+_MIN_TOKEN = 24
+
+
+def load_token(path):
+    """The Edge token: EDGE_TOKEN env wins, else the 0600 file. None if unset."""
+    import os
+    env = (os.environ.get("EDGE_TOKEN") or "").strip()
+    if env:
+        return env if len(env) >= _MIN_TOKEN else None
+    try:
+        text = open(path, "r", encoding="utf-8").read()
+    except OSError:
+        return None
+    text = text.strip()
+    return text if len(text) >= _MIN_TOKEN else None
+
+
+def save_token(path, tok) -> None:
+    """Write the token to `path` with mode 0600, creating parent dirs."""
+    import os
+    from pathlib import Path
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, str(tok).encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.chmod(str(p), 0o600)
