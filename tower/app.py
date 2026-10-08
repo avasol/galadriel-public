@@ -564,11 +564,52 @@ def create_tower(agent, scheduler=None) -> Flask:
     @app.route("/api/setup", methods=["POST"])
     def api_setup():
         """Write the brain credential to the body's .env. Body JSON:
-          {"provider": "anthropic"|"gemini", ...key fields}
+          {"provider": <brain>, "api_key": ..., "model": ..., "base_url": ...}
+        Every value is validated before the file is opened, so a refused
+        request never creates .env.
         """
         import os
         data = request.json or {}
         provider = (data.get("provider") or "").strip().lower()
+
+        KEYED = {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "gemini": "GEMINI_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "mistral": "MISTRAL_API_KEY",
+            "nebius": "NEBIUS_API_KEY",
+            "xai": "XAI_API_KEY",
+            "berget": "BERGET_API_KEY",
+        }
+        MODEL_VAR = {
+            "anthropic": "AGENT_MODEL",
+            "gemini": "GEMINI_MODEL",
+            "openai": "OPENAI_MODEL",
+            "mistral": "MISTRAL_MODEL",
+            "nebius": "NEBIUS_MODEL",
+            "xai": "XAI_MODEL",
+            "berget": "BERGET_MODEL",
+        }
+
+        def _clean(field, value):
+            """Strip a value and refuse anything that could inject a line."""
+            value = (value or "").strip()
+            if len(value) > 512:
+                return None, (jsonify({"error": f"{field} is too long."}), 400)
+            for c in value:
+                if c.isspace() or ord(c) < 32 or ord(c) == 127:
+                    return None, (jsonify({"error": f"{field} contains invalid characters."}), 400)
+            return value, None
+
+        api_key, err = _clean("api_key", data.get("api_key") or data.get("anthropic_api_key") or data.get("gemini_api_key"))
+        if err:
+            return err
+        model, err = _clean("model", data.get("model") or data.get("gemini_model"))
+        if err:
+            return err
+        base_url, err = _clean("base_url", data.get("base_url"))
+        if err:
+            return err
 
         lines = [
             "# Written by Galadriel first-run setup.",
@@ -577,19 +618,28 @@ def create_tower(agent, scheduler=None) -> Flask:
             "TOWER_PORT=8080",
         ]
 
-        if provider == "anthropic":
-            key = (data.get("anthropic_api_key") or "").strip()
-            if not key.startswith("sk-"):
+        if provider in KEYED:
+            if not api_key:
+                return jsonify({"error": "Enter your API key."}), 400
+            if provider == "anthropic" and not api_key.startswith("sk-"):
                 return jsonify({"error": "Enter a valid Anthropic key (starts with sk-)."}), 400
-            lines.append(f"ANTHROPIC_API_KEY={key}")
-        elif provider == "gemini":
-            key = (data.get("gemini_api_key") or "").strip()
-            if not key:
-                return jsonify({"error": "Enter your Google Gemini API key."}), 400
-            lines.append(f"GEMINI_API_KEY={key}")
-            lines.append("GEMINI_MODEL=" + (data.get("gemini_model") or "gemini-2.5-flash").strip())
+            lines.append(f"{KEYED[provider]}={api_key}")
+            if model:
+                lines.append(f"{MODEL_VAR[provider]}={model}")
+        elif provider == "local":
+            if not model:
+                return jsonify({"error": "Enter a model name."}), 400
+            lines.append(f"LOCAL_MODEL={model}")
+            if base_url:
+                if not (base_url.startswith("http://") or base_url.startswith("https://")):
+                    return jsonify({"error": "base_url must start with http:// or https://."}), 400
+                lines.append(f"LOCAL_BASE_URL={base_url}")
+        elif provider == "bedrock-nova":
+            if model:
+                lines.append(f"BEDROCK_MODEL_ID={model}")
         else:
-            return jsonify({"error": "Choose a brain: anthropic or gemini."}), 400
+            accepted = ", ".join(list(KEYED) + ["local", "bedrock-nova"])
+            return jsonify({"error": "Choose a brain: " + accepted}), 400
 
         try:
             with open(_dotenv_path(), "w", encoding="utf-8") as fh:
