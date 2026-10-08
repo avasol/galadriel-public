@@ -81,6 +81,7 @@ class Scheduler:
         # which on the body lives in the user's data dir and travels with the mind.
         self.ambient = AmbientState(config_dir)
         self._loop: asyncio.AbstractEventLoop | None = None  # captured in start()
+        self._sinks: list = []  # extra delivery sinks (fn(message, title))
 
         # Heartbeat state
         self.heartbeat_enabled = False
@@ -772,6 +773,10 @@ class Scheduler:
             log.exception(f"Scheduler [{channel_id}] silent error: {e}")
             return ""
 
+    def add_sink(self, fn) -> None:
+        """Register an extra delivery sink: fn(message: str, title: str)."""
+        self._sinks.append(fn)
+
     async def _send_to_discord(self, message: str, channel_id: str | None = None):
         """Send a message to the authorized user via DM (or configured channel).
 
@@ -783,6 +788,15 @@ class Scheduler:
         own humanized identity header (see harness/events.py). Applied HERE, at
         the outbound boundary — never earlier, so journal/history stay raw.
         """
+        from .response_status import present, Reply
+        from . import events as _events
+        for sink in self._sinks:
+            try:
+                shown = present(message) if isinstance(message, Reply) else message
+                sink(shown, _events.title(channel_id))
+            except Exception as e:
+                log.warning(f"Scheduler sink failed: {e}")
+
         if not self.bot:
             log.warning("No Discord bot available for scheduler message.")
             return
