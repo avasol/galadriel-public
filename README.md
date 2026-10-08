@@ -147,8 +147,9 @@ Same thesis, same memory format. Not the same code.
 
 ## Status after the freeze
 
-- **Tests:** the full suite runs on every push ([CI](.github/workflows/tests.yml)) against
-  [`requirements.lock`](requirements.lock), the exact versions it passed with on the freeze date.
+- **Tests:** at the freeze the full suite (902 passed, 1 skipped for an optional dependency)
+  ran in a clean Python 3.12 environment built from [`requirements.lock`](requirements.lock),
+  the exact versions listed there. `pip install -r requirements.lock pytest && pytest` repeats it.
   `requirements.txt` keeps the looser ranges.
 - **Models will age.** Provider adapters talk to APIs that keep changing. This table is what was
   checked live on 2026-10-08 (a short request that had to call a tool):
