@@ -757,6 +757,22 @@ def _is_request_too_large_error(exc: Exception) -> bool:
     s = str(exc).lower()
     return "request_too_large" in s or "413" in s or "request exceeds the maximum size" in s
 
+
+def _initial_model(explicit, env_value, provider) -> str:
+    """The boot model belongs to the brain; AGENT_MODEL is optional; a Claude
+    id is never sent to a non-Claude brain that has its own default."""
+    if explicit:
+        return explicit
+    env = (env_value or "").strip()
+    name = getattr(provider, "name", "")
+    pdef = getattr(provider, "default_model", None)
+    if name != "anthropic" and pdef and (not env or env.lower().startswith("claude-")):
+        return pdef
+    if env:
+        return env
+    return "claude-sonnet-5"
+
+
 class GaladrielAgent:
     """Stateful conversational agent backed by Claude with tool use."""
 
@@ -794,7 +810,7 @@ class GaladrielAgent:
             anthropic_client=None,
             api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),
         )
-        self.model = model or os.environ.get("AGENT_MODEL", "claude-sonnet-5")
+        self.model = _initial_model(model, os.environ.get("AGENT_MODEL"), self.provider)
         self.max_tokens = max_tokens or int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
         self.memory = MemoryManager(config_dir=config_dir, memory_dir=memory_dir)
         self.working_dir = working_dir or os.getcwd()
