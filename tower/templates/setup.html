@@ -56,23 +56,34 @@
 
     <label for="provider">Brain</label>
     <select id="provider" onchange="pick()">
-      <option value="anthropic">Bring your own Claude key (operator-blind — we are never on the wire)</option>
-      <option value="gemini">Bring your own Google Gemini key</option>
+      <option value="anthropic">Claude (Anthropic)</option>
+      <option value="gemini">Gemini (Google)</option>
+      <option value="openai">OpenAI</option>
+      <option value="mistral">Mistral (EU, Paris)</option>
+      <option value="nebius">Nebius (EU, Finland)</option>
+      <option value="xai">Grok (xAI)</option>
+      <option value="berget">Berget (EU, Sweden)</option>
+      <option value="local">A local model (Ollama, LM Studio)</option>
+      <option value="bedrock-nova">Amazon Nova (Bedrock, uses your AWS credentials)</option>
     </select>
+    <p class="hint">Your key goes straight to that provider — we are never on the wire.</p>
 
-    <!-- BYO Anthropic -->
-    <div class="field" data-p="anthropic">
-      <label>Anthropic API key</label>
-      <input id="anthropic_key" type="password" placeholder="sk-ant-...">
-      <p class="hint">Talks to Anthropic directly. We are not on the wire — operator-blind by construction.</p>
+    <!-- API key (keyed brains) -->
+    <div class="field" data-p="anthropic gemini openai mistral nebius xai berget">
+      <label>API key</label>
+      <input id="api_key" type="password" placeholder="your API key">
     </div>
 
-    <!-- BYO Gemini -->
-    <div class="field" data-p="gemini">
-      <label>Google Gemini API key</label>
-      <input id="gemini_key" type="password" placeholder="your Gemini key">
+    <!-- Model -->
+    <div class="field" data-p="anthropic gemini openai mistral nebius xai berget local bedrock-nova">
       <label>Model</label>
-      <input id="gemini_model" type="text" value="gemini-2.5-flash">
+      <input id="model" type="text" placeholder="leave empty for the default">
+    </div>
+
+    <!-- Base URL (local only) -->
+    <div class="field" data-p="local">
+      <label>Base URL</label>
+      <input id="base_url" type="text" placeholder="http://localhost:11434/v1">
     </div>
 
     <button id="go" onclick="save()">Awaken</button>
@@ -83,7 +94,7 @@
     function pick() {
       const p = document.getElementById('provider').value;
       document.querySelectorAll('.field').forEach(f =>
-        f.classList.toggle('on', f.dataset.p === p));
+        f.classList.toggle('on', f.dataset.p.split(' ').includes(p)));
     }
     function setMsg(t, cls) {
       const m = document.getElementById('msg');
@@ -91,7 +102,12 @@
     }
     async function save() {
       const provider = document.getElementById('provider').value;
-      const body = { provider };
+      const body = {
+        provider,
+        api_key: document.getElementById('api_key').value.trim(),
+        model: document.getElementById('model').value.trim(),
+        base_url: document.getElementById('base_url').value.trim()
+      };
       const btn = document.getElementById('go');
       btn.disabled = true; setMsg('Sealing your choice…');
       try {
