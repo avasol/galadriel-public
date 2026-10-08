@@ -20,7 +20,7 @@ def test_nebius_make_single(monkeypatch):
     assert isinstance(p, NebiusProvider)
     assert p.name == "nebius"
     assert p.base_url == "https://api.studio.nebius.ai/v1"
-    assert p.default_model == "deepseek-ai/DeepSeek-V3"
+    assert p.default_model == "deepseek-ai/DeepSeek-V4-Pro"  # moved at freeze: V3 no longer served
 
 def test_nebius_make_provider_without_fallbacks(monkeypatch):
     monkeypatch.setenv("NEBIUS_API_KEY", "fake-key")
